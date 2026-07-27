@@ -1,40 +1,5 @@
 """
-A dependency-free Markdown -> HTML renderer.
-
-Written to replace the optional `markdown` PyPI package used by
-`staypresent.server` so Markdown routes (`staypresent.web.markdown(...)`)
-render properly out of the box, with zero extra installs.
-
-Supported syntax (roughly equivalent to the "fenced_code", "tables",
-"sane_lists" and "toc" extensions StayPresent previously relied on):
-
-  Block level:
-    - ATX headings (# ... ######) and setext headings (===/---)
-      with auto-generated, de-duplicated `id` slugs (for anchor links)
-    - Paragraphs
-    - Fenced code blocks (``` or ~~~, with optional language for a
-      `class="language-xxx"` hook) and 4-space indented code blocks
-    - Blockquotes (including nesting)
-    - Unordered lists (-, *, +) and ordered lists (1. / 1)), including
-      basic nesting via indentation, tight or loose rendering
-    - GFM-style tables, including column alignment (:--, :-:, --:)
-    - Thematic breaks / horizontal rules (---, ***, ___)
-
-  Inline level:
-    - **bold**, *italic*, ***bold italic***, ~~strikethrough~~
-    - `inline code`
-    - [links](url "title") and ![images](url "title")
-    - autolinks: <https://example.com>
-    - hard line breaks (trailing double-space or backslash + newline)
-    - backslash-escaped punctuation (\\*, \\_, \\`, ...)
-
-This is intentionally a pragmatic subset renderer rather than a full
-CommonMark implementation, but it covers everything typically found in
-project READMEs / docs.
-
-Usage:
-    from staypresent._markdown import render
-    html_body = render(markdown_source)
+StayPresent Markdown-to-HTML Renderer.
 """
 
 import html
@@ -57,6 +22,25 @@ _OL_RE = re.compile(r'^( *)(\d{1,9})[.)][ \t]+(.*)$')
 _TABLE_SEP_RE = re.compile(r'^ {0,3}\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$')
 _INDENTED_CODE_RE = re.compile(r'^(?: {4}|\t)(.*)$')
 
+# Raw HTML blocks: a line starting (after up to 3 spaces) with an opening or
+# closing tag whose name is a known block-level element is passed through
+# verbatim (unescaped, unprocessed) until the next blank line - the same
+# "HTML block" behavior CommonMark/GitHub use for things like centered
+# badges/logos (`<p align="center"><img ...></p>`) sitting in a MARKDOWN.
+_HTML_BLOCK_START_RE = re.compile(r'^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?:[ \t>/]|$)')
+_HTML_COMMENT_START_RE = re.compile(r'^ {0,3}<!--')
+_HTML_BLOCK_TAGS = frozenset({
+    "address", "article", "aside", "base", "basefont", "blockquote", "body",
+    "caption", "center", "col", "colgroup", "dd", "details", "dialog", "dir",
+    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+    "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header",
+    "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
+    "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param",
+    "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead",
+    "title", "tr", "track", "ul", "script", "style", "pre", "textarea",
+    "img", "a", "span", "button", "input", "label", "select", "svg",
+})
+
 # ---------------------------------------------------------------------------
 # Inline-level patterns
 # ---------------------------------------------------------------------------
@@ -72,8 +56,16 @@ _ITALIC_STAR_RE = re.compile(r'(?<!\*)\*(?!\*)(?=\S)(.+?)(?<=\S)\*(?!\*)')
 _ITALIC_UNDER_RE = re.compile(r'(?<![\w_])_(?!_)(?=\S)(.+?)(?<=\S)_(?![\w_])')
 _STRIKE_RE = re.compile(r'~~(?=\S)(.+?)(?<=\S)~~')
 _HARDBREAK_RE = re.compile(r'(?: {2,}|\\)\n')
-_SLUG_STRIP_RE = re.compile(r'[^\w\s-]')
-_SLUG_WS_RE = re.compile(r'[\s]+')
+# GitHub's own heading-slug algorithm: lowercase, drop anything that isn't a
+# unicode word character, whitespace, or hyphen (this is what removes emoji
+# and punctuation while leaving existing hyphens/underscores alone) - but
+# deliberately keep variation-selector code points (U+FE00-U+FE0F), since
+# GitHub's slugger does the same, and *every individual space* (not each
+# run of whitespace) becomes its own hyphen, which is why an emoji-led
+# heading like "🚀 Features" slugs to "-features" (leading hyphen) and
+# "A & B" slugs to "a--b" (double hyphen, since removing "&" leaves two
+# spaces behind).
+_SLUG_STRIP_RE = re.compile(r'[^\w\s\-\uFE00-\uFE0F]', re.UNICODE)
 
 
 class MarkdownRenderer:
@@ -92,6 +84,12 @@ class MarkdownRenderer:
 
     # -- block parsing --------------------------------------------------
 
+    def _is_html_block_start(self, line: str) -> bool:
+        m = _HTML_BLOCK_START_RE.match(line)
+        if not m:
+            return False
+        return m.group(1).lower() in _HTML_BLOCK_TAGS
+
     def _is_block_start(self, line: str) -> bool:
         return bool(
             _ATX_HEADING_RE.match(line)
@@ -100,6 +98,8 @@ class MarkdownRenderer:
             or _BLOCKQUOTE_RE.match(line)
             or _UL_RE.match(line)
             or _OL_RE.match(line)
+            or _HTML_COMMENT_START_RE.match(line)
+            or self._is_html_block_start(line)
         )
 
     def _render_blocks(self, lines):
@@ -111,6 +111,15 @@ class MarkdownRenderer:
 
             if not line.strip():
                 i += 1
+                continue
+
+            # --- raw HTML block (pass through verbatim, unescaped) ---
+            if _HTML_COMMENT_START_RE.match(line) or self._is_html_block_start(line):
+                html_lines = []
+                while i < n and lines[i].strip():
+                    html_lines.append(lines[i])
+                    i += 1
+                out.append("\n".join(html_lines))
                 continue
 
             # --- fenced code block ---
@@ -345,9 +354,15 @@ class MarkdownRenderer:
 
     def _slugify(self, text):
         plain = re.sub(r'`([^`]*)`', r'\1', text)  # drop inline-code backticks
-        plain = _SLUG_STRIP_RE.sub("", plain).strip().lower()
-        slug = _SLUG_WS_RE.sub("-", plain) or "section"
-        base, suffix = slug, 1
+        plain = plain.lower()
+        plain = _SLUG_STRIP_RE.sub("", plain)
+        # Every individual whitespace character becomes its own hyphen -
+        # deliberately NOT collapsed, and NOT trimmed from the ends, to
+        # match GitHub's own slugs (see _SLUG_STRIP_RE comment above).
+        slug = re.sub(r'\s', '-', plain)
+        if not slug:
+            slug = "section"
+        base, suffix = slug, 0
         while slug in self._used_ids:
             suffix += 1
             slug = "{}-{}".format(base, suffix)

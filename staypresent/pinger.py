@@ -1,22 +1,3 @@
-"""
-Optional self-ping / keep-warm feature.
-
-Some free hosting tiers (Render, Railway, Replit, etc.) spin a web service
-down after a period of inactivity, and only wake it back up once a new
-request comes in. `staypresent.cron()` works around this by periodically
-making a real HTTP request to your service's *public* URL from a background
-thread, so the platform keeps seeing traffic.
-
-Nothing in this module runs unless you explicitly call `staypresent.ping()`
-or `staypresent.cron()` yourself - it's entirely opt-in.
-
-Note: pinging your own 127.0.0.1/0.0.0.0 does NOT prevent platform-level
-inactivity spin-down, since that traffic never leaves the machine. Point
-`cron()` at your public URL (e.g. "https://your-app.onrender.com") for that
-use case. Pinging a local host is still useful for other things (e.g.
-smoke-testing that your server is actually responding).
-"""
-
 import logging
 import threading
 import time
@@ -72,32 +53,7 @@ def _build_url(host: str, port: int = None, path: str = "/", https: bool = None)
 
 
 def ping(host: str, port: int = None, path: str = "/", timeout: float = 10.0, https: bool = None) -> dict:
-    """
-    Make a single HTTP GET request right now and return the result. This
-    call blocks until the request finishes (or times out) - for a repeating
-    background version, use `staypresent.cron()` instead.
-
-    Args:
-        host: A bare host ("google.com"), a bind address ("0.0.0.0", treated
-            as this machine), or a full URL ("https://google.com/status").
-        port: Optional port to connect to. Ignored if `host` is already a
-            full URL.
-        path: Path to request. Ignored if `host` is already a full URL.
-            Defaults to "/".
-        timeout: Seconds to wait for a response before giving up.
-        https: Force http (False) or https (True). If not set, bare local
-            addresses (127.0.0.1/localhost/0.0.0.0) default to http and
-            everything else defaults to https.
-
-    Returns:
-        A dict: {"url", "ok", "status_code", "elapsed", "error"}.
-        `ok` is True only for 2xx/3xx responses.
-
-    Example:
-        result = staypresent.ping("https://my-app.onrender.com")
-        if not result["ok"]:
-            print("Ping failed:", result["error"])
-    """
+    
     if timeout <= 0:
         raise ValueError(f"staypresent.ping(): timeout must be > 0, got {timeout}.")
 
@@ -129,12 +85,6 @@ def ping(host: str, port: int = None, path: str = "/", timeout: float = 10.0, ht
 
 
 class CronHandle:
-    """
-    Returned by `staypresent.cron()`. Lets you stop the background pinger
-    if you need to; otherwise it just keeps running for the life of the
-    process (it's a daemon thread, so it won't block your program from
-    exiting on its own).
-    """
 
     def __init__(self, thread: threading.Thread, stop_event: threading.Event, url: str):
         self._thread = thread
@@ -165,35 +115,7 @@ def cron(
     on_success=None,
     on_failure=None,
 ) -> CronHandle:
-    """
-    Start a background thread that pings `host` on a schedule, to keep your
-    service "warm" and prevent free-tier hosting platforms from spinning it
-    down due to inactivity. Non-blocking - call this before `staypresent.run()`.
-
-    An initial ping fires immediately, then again every `interval` seconds.
-
-    Args:
-        host / port / path / timeout / https: Same as `staypresent.ping()`.
-        interval: Seconds between pings. Default 300 (5 minutes) - frequent
-            enough to keep most platforms' idle timers from tripping,
-            without hammering the target with traffic.
-        repeat: If True (default), keep pinging forever on `interval`. If
-            False, ping once in the background and stop (for a one-off
-            ping you don't need to wait on, use `staypresent.ping()`
-            directly instead, which is simpler and synchronous).
-        on_success: Optional callback `fn(result)` called after every
-            successful ping. Exceptions inside it are logged, not raised.
-        on_failure: Optional callback `fn(result)` called after every
-            failed ping. Exceptions inside it are logged, not raised.
-
-    Returns:
-        A CronHandle - call `.stop()` on it to cancel future pings.
-
-    Example:
-        # Keep a Render/Railway free-tier deployment from sleeping.
-        staypresent.cron("https://my-app.onrender.com", interval=240)
-        staypresent.run("bot.py")
-    """
+    
     if interval <= 0:
         raise ValueError(f"staypresent.cron(): interval must be > 0, got {interval}.")
     if timeout <= 0:

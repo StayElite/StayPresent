@@ -23,26 +23,14 @@ if not logger.handlers:
 
 
 def _to_process_exit_code(returncode: int) -> int:
-    """
-    Normalize a subprocess.Popen.returncode into a value safe to pass to
-    sys.exit(). When a process is killed by a signal, Popen reports that as
-    a *negative* returncode (e.g. -9 for SIGKILL) rather than the POSIX
-    "128 + signal number" convention shells, Docker, and Kubernetes use
-    (e.g. 137 for SIGKILL/OOM-kill). Passing a negative number straight to
-    sys.exit() doesn't raise that convention either - sys.exit(-9) actually
-    exits with 247, not 137 - so tooling matching on the standard codes
-    would misread it. This converts -N back to the conventional 128 + N.
-    """
+    
     if returncode < 0:
         return 128 - returncode
     return returncode
 
 
 def _serve_with_waitress(host: str, port: int, threads: int) -> bool:
-    """
-    Try to serve the app with waitress, a production-grade WSGI server.
-    Returns True if waitress was available and used, False if it isn't installed.
-    """
+    
     try:
         from waitress import serve as waitress_serve
     except ImportError:
@@ -99,12 +87,7 @@ def _bot_label(index: int, file_path: str, total: int) -> str:
 
 
 def _normalize_bot_configs(bot_file, bot_args, env, bots):
-    """
-    Turn the various ways of describing one or more bots into a single,
-    uniform list of {"file": str, "args": list, "env": dict} dicts.
-
-    Returns the normalized list. Raises TypeError/ValueError on bad input.
-    """
+    
     if bots is not None:
         if bot_file is not None or bot_args is not None or env is not None:
             raise TypeError(
@@ -195,88 +178,6 @@ def run(
     env: dict = None,
     bots: list = None,
 ):
-    """
-    Starts the web server + your bot process(es).
-
-    Example (single bot):
-        staypresent.run("bot.py")
-        staypresent.run("bot.py", host="0.0.0.0", port=5000)
-
-    Example (multiple bots, sharing the same args/env):
-        staypresent.run(["telegram_bot.py", "discord_bot.py"])
-
-    Example (multiple bots, each with its own args/env):
-        staypresent.run(bots=[
-            {"file": "telegram_bot.py", "args": ["--verbose"]},
-            {"file": "discord_bot.py", "env": {"SHARD": "0"}},
-        ])
-
-    By default, if the optional `waitress` package is installed, it is used
-    to serve the app so you don't see Flask's "development server" warning.
-    If `waitress` isn't installed, StayPresent automatically falls back to
-    Flask's built-in dev server and logs a one-time warning explaining how
-    to fix it.
-
-    If a bot process crashes (exits with a non-zero code), StayPresent will
-    automatically restart it, up to `max_restarts` times, waiting
-    `restart_delay` seconds between attempts. A clean exit (exit code 0) is
-    treated as intentional and is not restarted. Each bot is monitored and
-    restarted independently, so one bot crashing/restarting doesn't affect
-    the others. Restarts do not apply when you stop StayPresent yourself
-    (Ctrl+C / SIGTERM).
-
-    If any bot ultimately fails to stay up - either `restart_on_crash` is
-    False and it exits non-zero, or `max_restarts` is exhausted for it -
-    this function waits for every other bot to finish as well, then calls
-    `sys.exit()` with a non-zero exit code instead of returning normally.
-    This makes sure the wrapping process itself exits non-zero, so a
-    hosting platform's own restart-on-crash policy (Render, Railway,
-    Docker, systemd, etc.) can kick in as a last resort; otherwise the
-    process would exit 0 looking "successful" despite a bot having failed.
-
-    Args:
-        bot_file: Path to the Python script to run alongside the server, or
-            a list of paths to run several bots at once. Mutually exclusive
-            with `bots` (use `bots` instead if each bot needs its own
-            `bot_args`/`env`).
-        host: Host to bind the web server to.
-        port: Port to bind the web server to.
-        production: If True (default), use waitress when available for a
-            production-ready server. Set to False to force Flask's dev
-            server even if waitress is installed.
-        threads: Number of worker threads for waitress to use (default 4,
-            same as waitress's own default). Only applies when waitress is
-            actually used (i.e. `production=True` and waitress installed).
-            Increase this if you're pointing real traffic at the server,
-            not just occasional keep-alive pings.
-        restart_on_crash: If True (default), automatically relaunch a bot
-            process if it exits with a non-zero exit code. Set to False to
-            keep the old behavior of exiting once a bot process ends.
-        max_restarts: Maximum number of times to restart a bot process
-            after a crash before giving up. Ignored if restart_on_crash is
-            False. Applies per bot when running multiple.
-        restart_delay: Seconds to wait before relaunching a bot process
-            after a crash. Ignored if restart_on_crash is False.
-        restart_reset_after: If a bot stays up for at least this many
-            seconds after a restart, its restart counter is reset to 0.
-            This makes `max_restarts` a "consecutive crashes" budget
-            instead of a lifetime one, so a bot that runs fine for a long
-            time and then crashes once isn't penalized for earlier,
-            unrelated crashes. Ignored if restart_on_crash is False.
-        bot_args: Optional list of extra command-line arguments to pass to
-            every bot in `bot_file` (e.g. `["--verbose"]`). Ignored/invalid
-            when `bots` is used - put per-bot args in each bot's dict there
-            instead.
-        env: Optional dict of extra environment variables for every bot in
-            `bot_file`. Merged on top of the current process's environment
-            (i.e. you only need to specify what you want to add/override).
-            Ignored/invalid when `bots` is used - put per-bot env in each
-            bot's dict there instead.
-        bots: Optional list of dicts for per-bot configuration, one dict per
-            bot: `{"file": "bot.py", "args": [...], "env": {...}}` ("args"
-            and "env" are optional per entry). Mutually exclusive with
-            `bot_file`/`bot_args`/`env`.
-    """
 
     bot_configs = _normalize_bot_configs(bot_file, bot_args, env, bots)
 

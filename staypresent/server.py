@@ -7,7 +7,8 @@ from flask import Flask, Response, abort, jsonify, redirect, send_from_directory
 from werkzeug.exceptions import NotFound
 
 from . import web
-from ._markdown import render as _render_markdown
+from .markdown_renderer import render as _render_markdown
+from .markdown_css import STAYPRESENT_MARKDOWN_CSS
 
 logger = logging.getLogger("staypresent")
 
@@ -38,8 +39,13 @@ def _render_markdown_file(file_path: str) -> Response:
     page = (
         "<!DOCTYPE html>\n"
         "<html>\n"
-        f"<head><meta charset=\"utf-8\"><title>{_html_escape.escape(os.path.basename(file_path))}</title></head>\n"
-        f"<body>{body}</body>\n"
+        "<head>\n"
+        "<meta charset=\"utf-8\">\n"
+        f"<title>{_html_escape.escape(os.path.basename(file_path))}</title>\n"
+        "<meta name=\"color-scheme\" content=\"light dark\">\n"
+        f"<style>{STAYPRESENT_MARKDOWN_CSS}</style>\n"
+        "</head>\n"
+        f"<body><article class=\"markdown-body\">{body}</article></body>\n"
         "</html>"
     )
     return Response(page, mimetype="text/html")
@@ -82,15 +88,6 @@ def health():
 
 
 def _find_asset_owner(request_path: str):
-    """
-    Find the registered html/markdown route whose directory should be used
-    to resolve `request_path` as a static asset (CSS/JS/images living next
-    to that file), using the longest matching path prefix so a more
-    specific route (e.g. "/dashboard") wins over a broader one (e.g. "/").
-
-    Returns (directory, remaining_filename) or None if no route's directory
-    could plausibly own this path.
-    """
     best = None  # (prefix_len, directory, remainder)
     for route_path, state in web.get_all().items():
         if state.get("type") not in ("html", "markdown"):
