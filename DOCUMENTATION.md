@@ -10,6 +10,8 @@
 * **Flask**
 * **waitress** (optional, but highly recommended for production)
 
+Markdown rendering (`staypresent.web.markdown(...)`) needs no extra package — StayPresent ships its own dependency-free Markdown-to-HTML renderer.
+
 ---
 
 ## 2. Getting Started
@@ -34,11 +36,15 @@ pip install staypresent[prod]
 
 ```
 
+**Markdown Rendering:**
+
+Works out of the box — StayPresent renders `.md` responses to HTML with its own built-in renderer, so there's no extra package to install.
+
 ---
 
 ## 3. Web Server Configuration (`staypresent.web`)
 
-The `staypresent.web` module dictates the HTTP response served by the background web server at the root (`/`) endpoint. If unconfigured, it defaults to a JSON response: `{"message": "I'm Present"}`.
+The `staypresent.web` module dictates the HTTP response(s) served by the background web server. Every function accepts an optional `path` argument (default `"/"`), so you can host multiple independent responses at once — see [Section 3.5](#35-custom-paths--multiple-responses) below. If the root path (`"/"`) is left unconfigured, it defaults to a JSON response: `{"message": "I'm Present"}`.
 
 **Basic Usage Example:**
 
@@ -91,6 +97,51 @@ staypresent.web.html("templates/index.html")
 
 > **Note:** Any static assets (CSS, JS, images) located in the same directory as the target HTML file are automatically served. Path traversal is strictly prohibited by internal security checks.
 
+### Markdown Responses
+
+Reads a `.md` file and renders it to HTML on every request, the same on-disk-editable model as `html()`.
+
+```python
+import staypresent
+
+staypresent.web.markdown("CHANGELOG.md")
+
+```
+
+Rendering is done by StayPresent's own built-in, dependency-free Markdown-to-HTML renderer — nothing extra to install. It covers headings (with auto-generated anchor IDs), paragraphs, bold/italic/strikethrough, inline and fenced code blocks, links and images, blockquotes, ordered/unordered lists (including nesting), tables with column alignment, horizontal rules, and hard line breaks. Static assets next to the `.md` file (e.g. images) are served automatically, exactly as with `html()`.
+
+### 3.5 Custom Paths & Multiple Responses
+
+`text()`, `json()`, `html()`, and `markdown()` all accept a `path` keyword argument. This lets a single StayPresent instance host several independent responses at once — useful for giving each of multiple bots (see Section 4.1) its own status endpoint.
+
+```python
+import staypresent
+
+staypresent.web.json({"status": "online"}, path="/")
+staypresent.web.text("bot #2 is alive", path="/bot2")
+staypresent.web.html("dashboard.html", path="/dashboard")
+staypresent.web.markdown("CHANGELOG.md", path="/changelog")
+
+```
+
+**Path rules:**
+
+* A path is normalized: it must start with `/`, repeated slashes are collapsed, and a trailing slash is stripped (`"/status/"` and `"/status"` refer to the same route).
+* Paths must not contain `?` or `#` — StayPresent raises `ValueError` if they do, since those characters belong in a query string/fragment, not a route.
+* `/health` is reserved for the built-in health check (Section 6) and cannot be registered via `staypresent.web`.
+* For `html()`/`markdown()` at any path other than `"/"`, a bare request to that path (e.g. `/dashboard`) is automatically redirected (HTTP 308) to a trailing-slash version (`/dashboard/`). This is required for relative asset links inside the file (`href="style.css"`, `src="images/logo.png"`) to resolve against that file's own directory rather than its parent. `text()`/`json()` responses don't need this, since they have no static assets to resolve.
+* Static asset lookups use the *longest matching path prefix* across every registered `html()`/`markdown()` route, so nested/overlapping mounts (e.g. `"/"` and `"/dashboard"` both hosting HTML) resolve unambiguously to the right directory.
+
+**Managing registered paths:**
+
+```python
+staypresent.web.paths()          # -> ['/', '/bot2', '/changelog', '/dashboard']
+staypresent.web.get_all()        # -> {'/': {'type': 'json', 'value': {...}}, '/bot2': {...}, ...}
+staypresent.web.get("/bot2")     # -> {'type': 'text', 'value': 'bot #2 is alive'}
+staypresent.web.remove("/bot2")  # -> True (was registered) / False (wasn't)
+
+```
+
 ### State Inspection
 
 To retrieve the currently configured response payload for debugging or testing:
@@ -101,11 +152,13 @@ current_state = staypresent.web.get()
 
 ```
 
+`get()` defaults to `path="/"`; pass a different `path` to inspect any other registered route.
+
 ---
 
 ## 4. Process Execution (`staypresent.run`)
 
-The `run` function is the primary entry point. It spawns the web server and concurrently executes your target Python script.
+The `run` function is the primary entry point. It spawns the web server and concurrently executes one or more target Python scripts ("bots").
 
 ```python
 import staypresent
@@ -119,29 +172,63 @@ staypresent.run(
 
 ```
 
+### 4.1 Running Multiple Bots
+
+`bot_file` also accepts a list of paths, launching and independently supervising each one:
+
+```python
+import staypresent
+
+staypresent.run(["telegram_bot.py", "discord_bot.py"])
+
+```
+
+`bot_args`/`env`, if given alongside a list, are applied identically to every bot in it. For per-bot arguments or environment variables, use `bots` instead — a list of dicts, one per bot:
+
+```python
+import staypresent
+
+staypresent.run(bots=[
+    {"file": "telegram_bot.py", "args": ["--verbose"]},
+    {"file": "discord_bot.py", "env": {"SHARD": "0"}},
+    {"file": "worker.py"},
+])
+
+```
+
+`bots` is mutually exclusive with `bot_file`/`bot_args`/`env` — a `TypeError` is raised if both styles are mixed. Each entry in `bots` requires a `"file"` key; `"args"` (list) and `"env"` (dict) are optional per entry.
+
+With multiple bots:
+
+* Every bot file is validated to exist *before* the server starts (a missing file raises `FileNotFoundError` immediately, before anything is launched).
+* Each bot gets its own restart counter and is monitored on its own thread — a crash (and subsequent restart) in one bot has no effect on the others.
+* `staypresent.run()` waits for every bot to finish (or fail permanently) before returning or exiting the process.
+* `Ctrl+C`/`SIGTERM` terminates the web server and *all* bot processes.
+
 ### Execution Parameters
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `bot_file` | `str` | **Required** | Target Python script to execute concurrently. |
+| `bot_file` | `str` or `list[str]` | `None` | Target Python script(s) to execute concurrently. Mutually exclusive with `bots`. |
 | `host` | `str` | `"0.0.0.0"` | Network interface to bind the web server. |
 | `port` | `int` | `8080` | Port allocation for the web server. |
 | `production` | `bool` | `True` | Utilizes `waitress` if available. Set to `False` to force Flask's dev server. |
 | `threads` | `int` | `4` | Worker threads for `waitress` (requires `production=True`). |
-| `restart_on_crash` | `bool` | `True` | Relaunches the bot upon a non-zero exit code. |
-| `max_restarts` | `int` | `5` | Maximum consecutive restart attempts. |
+| `restart_on_crash` | `bool` | `True` | Relaunches a bot upon a non-zero exit code. |
+| `max_restarts` | `int` | `5` | Maximum consecutive restart attempts, per bot. |
 | `restart_delay` | `float` | `2.0` | Seconds to wait before process respawn. |
-| `restart_reset_after` | `float` | `60.0` | Seconds of continuous uptime required to reset the crash counter to zero. |
-| `bot_args` | `list` | `None` | CLI arguments to pass to the target script (e.g., `["--verbose"]`). |
-| `env` | `dict` | `None` | Environment variables injected into the target process. |
+| `restart_reset_after` | `float` | `60.0` | Seconds of continuous uptime required to reset a bot's crash counter to zero. |
+| `bot_args` | `list` | `None` | CLI arguments to pass to every bot in `bot_file` (e.g., `["--verbose"]`). Ignored when `bots` is used. |
+| `env` | `dict` | `None` | Environment variables injected into every bot in `bot_file`. Ignored when `bots` is used. |
+| `bots` | `list[dict]` | `None` | Per-bot configuration: `[{"file": ..., "args": [...], "env": {...}}, ...]`. Mutually exclusive with `bot_file`/`bot_args`/`env`. |
 
 ### Crash Recovery Protocol
 
-StayPresent strictly monitors the subprocess lifecycle:
+StayPresent strictly monitors every bot's subprocess lifecycle, independently:
 
-* **Clean Exits:** An exit code of `0` is treated as an intentional shutdown and bypasses restart logic.
-* **Signals:** Interruptions (`SIGINT`/`Ctrl+C`, `SIGTERM`) initiate a clean teardown of both the server and the bot.
-* **Terminal Failures:** If `max_restarts` is exhausted, or if restarts are disabled and a crash occurs, `staypresent.run()` exits the main process with the bot's final non-zero exit code. This ensures platform-level orchestrators (Docker, systemd) correctly interpret the failure state.
+* **Clean Exits:** An exit code of `0` is treated as an intentional shutdown for that bot and bypasses restart logic.
+* **Signals:** Interruptions (`SIGINT`/`Ctrl+C`, `SIGTERM`) initiate a clean teardown of the server and every bot.
+* **Terminal Failures:** If `max_restarts` is exhausted for a bot, or if restarts are disabled and it crashes, that bot is marked as permanently failed (but other bots keep running). Once every bot has finished, if any bot ended in a permanently-failed state, `staypresent.run()` exits the main process with a non-zero exit code. This ensures platform-level orchestrators (Docker, systemd) correctly interpret the failure state.
 
 ---
 
@@ -216,14 +303,18 @@ logging.getLogger("staypresent").setLevel(logging.INFO)
 
 ### `staypresent.web`
 
-* **`web.text(content: str)`** – Configures the root route to return plain text.
-* **`web.json(data: dict)`** – Configures the root route to return a JSON payload.
-* **`web.html(filepath: str)`** – Configures the root route to serve an HTML template (alongside neighboring static files).
-* **`web.get()`** – Returns the currently configured response state as a dictionary.
+* **`web.text(message: str, path: str = "/")`** – Configures `path` to return plain text.
+* **`web.json(data: Any, path: str = "/")`** – Configures `path` to return a JSON payload (deep-copied).
+* **`web.html(file_path: str, path: str = "/")`** – Configures `path` to serve an HTML file, read fresh every request, alongside neighboring static files.
+* **`web.markdown(file_path: str, path: str = "/")`** – Configures `path` to serve a Markdown file rendered to HTML, read and re-rendered fresh every request, alongside neighboring static files.
+* **`web.remove(path: str = "/")`** – Stops hosting a response at `path`. Returns `True`/`False`.
+* **`web.get(path: str = "/")`** – Returns the currently configured response state for `path` as a dictionary, or `{}` if nothing is registered there.
+* **`web.get_all()`** – Returns every registered path and its state as one dictionary.
+* **`web.paths()`** – Returns a sorted list of every currently-registered path.
 
 ### `staypresent`
 
-* **`run(bot_file: str, ...)`** – Starts the HTTP server and manages the application process lifecycle.
+* **`run(bot_file: str | list[str] = None, ..., bots: list[dict] = None)`** – Starts the HTTP server and manages the lifecycle of one or more bot processes.
 * **`ping(host: str, ...)`** – Sends a synchronous HTTP request.
 * **`cron(host: str, ...)`** – Runs scheduled background keep-warm requests.
 
@@ -353,6 +444,8 @@ pip install staypresent[prod]
 
 ```
 
+Markdown rendering (`staypresent.web.markdown()`) needs no extra package at all — StayPresent renders `.md` files to proper HTML itself, out of the box.
+
 ---
 
 ### What happens if my bot crashes?
@@ -374,6 +467,37 @@ staypresent.run(
 )
 
 ```
+
+---
+
+### Can StayPresent run more than one bot at once?
+
+Yes. Pass a list of file paths to `bot_file`:
+
+```python
+staypresent.run(["telegram_bot.py", "discord_bot.py"])
+```
+
+Each bot is supervised (and restarted on crash) independently. For per-bot arguments or environment variables, use the `bots` parameter instead — see [Section 4.1](#41-running-multiple-bots).
+
+---
+
+### Can I serve more than one response at different paths?
+
+Yes. `text()`, `json()`, `html()`, and `markdown()` all accept a `path` argument (default `"/"`):
+
+```python
+staypresent.web.json({"status": "online"})
+staypresent.web.text("bot #2 status", path="/bot2")
+```
+
+See [Section 3.5](#35-custom-paths--multiple-responses) for the full rules (trailing-slash redirects, static asset resolution, the reserved `/health` path, etc.).
+
+---
+
+### Can StayPresent render Markdown files?
+
+Yes, via `staypresent.web.markdown("file.md")`. It renders to HTML using StayPresent's own built-in Markdown renderer — no extra package required.
 
 ---
 

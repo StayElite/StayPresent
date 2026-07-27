@@ -1,36 +1,65 @@
+import html as _html_escape
+import logging
 import os
+import re
 
-from flask import Flask, jsonify, Response, send_from_directory, abort
+from flask import Flask, Response, abort, jsonify, redirect, send_from_directory
 from werkzeug.exceptions import NotFound
 
 from . import web
+from ._markdown import render as _render_markdown
 
+logger = logging.getLogger("staypresent")
 
 # static_folder=None disables Flask's own built-in "/static/<path:filename>"
 # route. StayPresent doesn't ship any static assets of its own - but if left
-# enabled, that built-in route silently shadows our own static_files() route
-# below for any request path starting with "static/", which is the single
-# most common naming convention for an assets folder (e.g. an HTML file that
-# links to "static/style.css" or "static/logo.png" right next to it). With
-# the built-in route active, those requests 404 against Flask's nonexistent
-# default static folder instead of ever reaching static_files(), which knows
-# how to correctly serve them from next to the user's HTML file.
+# enabled, that built-in route silently shadows our own catch-all route below
+# for any request path starting with "static/", which is the single most
+# common naming convention for an assets folder (e.g. an HTML file that links
+# to "static/style.css" or "static/logo.png" right next to it). With the
+# built-in route active, those requests 404 against Flask's nonexistent
+# default static folder instead of ever reaching catch_all(), which knows how
+# to correctly serve them from next to the user's HTML/Markdown file.
 app = Flask(__name__, static_folder=None)
 
 
-@app.route("/")
-def home():
-    state = web.get()
+def _render_html_file(file_path: str) -> Response:
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return Response(content, mimetype="text/html")
+
+
+def _render_markdown_file(file_path: str) -> Response:
+    with open(file_path, "r", encoding="utf-8") as f:
+        source = f.read()
+
+    body = _render_markdown(source)
+
+    page = (
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        f"<head><meta charset=\"utf-8\"><title>{_html_escape.escape(os.path.basename(file_path))}</title></head>\n"
+        f"<body>{body}</body>\n"
+        "</html>"
+    )
+    return Response(page, mimetype="text/html")
+
+
+def _render_response(state: dict):
     response_type = state.get("type")
     value = state.get("value")
 
     if response_type == "html":
         try:
-            with open(value, "r", encoding="utf-8") as f:
-                content = f.read()
+            return _render_html_file(value)
         except (OSError, UnicodeDecodeError) as exc:
             return jsonify({"error": f"Could not read HTML file: {exc}"}), 500
-        return Response(content, mimetype="text/html")
+
+    if response_type == "markdown":
+        try:
+            return _render_markdown_file(value)
+        except (OSError, UnicodeDecodeError) as exc:
+            return jsonify({"error": f"Could not read Markdown file: {exc}"}), 500
 
     if response_type == "json":
         try:
@@ -52,25 +81,64 @@ def health():
     return jsonify({"status": "ok"})
 
 
-@app.route("/<path:filename>")
-def static_files(filename):
+def _find_asset_owner(request_path: str):
     """
-    Serve any file that lives alongside the HTML file passed to
-    `staypresent.web.html()` (e.g. style.css, script.js, images/logo.png).
+    Find the registered html/markdown route whose directory should be used
+    to resolve `request_path` as a static asset (CSS/JS/images living next
+    to that file), using the longest matching path prefix so a more
+    specific route (e.g. "/dashboard") wins over a broader one (e.g. "/").
 
-    Only active when the current response is an HTML response - if no HTML
-    file has been set (or a JSON/text response is active instead), this
-    route 404s just like any other unknown path would.
+    Returns (directory, remaining_filename) or None if no route's directory
+    could plausibly own this path.
     """
-    state = web.get()
-    if state.get("type") != "html":
-        abort(404)
+    best = None  # (prefix_len, directory, remainder)
+    for route_path, state in web.get_all().items():
+        if state.get("type") not in ("html", "markdown"):
+            continue
 
-    directory = os.path.dirname(state.get("value"))
+        prefix = "/" if route_path == "/" else route_path + "/"
+        if request_path == route_path or not request_path.startswith(prefix):
+            continue
 
-    try:
-        # send_from_directory safely resolves `filename` against `directory`
-        # and refuses to serve anything that escapes it (no path traversal).
-        return send_from_directory(directory, filename)
-    except NotFound:
-        abort(404)
+        remainder = request_path[len(prefix):]
+        if best is None or len(prefix) > best[0]:
+            best = (len(prefix), os.path.dirname(state["value"]), remainder)
+
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+@app.route("/", defaults={"req_path": ""})
+@app.route("/<path:req_path>")
+def catch_all(req_path):
+    request_path = re.sub(r"/+", "/", "/" + req_path)
+    had_trailing_slash = request_path != "/" and request_path.endswith("/")
+    canonical = request_path.rstrip("/") if request_path != "/" else "/"
+    if not canonical:
+        canonical = "/"
+
+    state = web.get(canonical)
+    if state:
+        response_type = state.get("type")
+        if response_type in ("html", "markdown") and canonical != "/" and not had_trailing_slash:
+            # Redirect "/dashboard" -> "/dashboard/" so relative asset links
+            # inside the served file (e.g. href="style.css") resolve against
+            # this page's own directory instead of its parent.
+            return redirect(canonical + "/", code=308)
+        return _render_response(state)
+
+    owner = _find_asset_owner(canonical)
+    if owner is not None:
+        directory, remainder = owner
+        if not remainder:
+            abort(404)
+        try:
+            # send_from_directory safely resolves `remainder` against
+            # `directory` and refuses to serve anything that escapes it
+            # (no path traversal).
+            return send_from_directory(directory, remainder)
+        except NotFound:
+            abort(404)
+
+    abort(404)
