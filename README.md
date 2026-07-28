@@ -49,6 +49,7 @@ Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **He
 * **Zero-Friction Setup:** Get running with just one line of code.
 * **Production-Ready by Default:** Automatically detects and uses `waitress` to avoid Flask's "development server" warnings.
 * **Multiple Bot Support:** Run several bot processes side-by-side under one web server, each monitored and restarted independently, with shared or per-bot arguments/environment variables.
+* **Package-Aware Bot Launching:** Bots that live inside a package and rely on relative imports can be launched as a proper module (`python -m mypkg.bot`) via `bot_module`, instead of failing the way a bare `python bot.py` would.
 * **Auto-Restarts & Crash Recovery:** Automatically respawns any bot process if it crashes, complete with customizable delays and consecutive-crash budgets — per bot.
 * **Flexible Responses:** Serve custom plain text, JSON (default), full HTML templates, or beautifully rendered Markdown.
 * **Built-in Markdown Renderer — Zero Extra Dependencies:** Headings, emphasis, strikethrough, links, images, autolinks, nested lists, nested blockquotes, tables, fenced/indented code blocks, raw HTML passthrough, and a GitHub-flavored stylesheet — no `markdown` package required.
@@ -264,6 +265,37 @@ staypresent.run(bots=[
 
 > **Note on bots with the same filename:** if two bot files share a filename (e.g. `shard_a/bot.py` and `shard_b/bot.py`), they run as fully independent processes with no conflict — StayPresent tracks each by its position in the list, not its name. The only thing that changes is the log labels: instead of two ambiguous `bot[0] 'bot.py'`/`bot[1] 'bot.py'` lines, StayPresent automatically switches to showing each one's full path (e.g. `bot[0] 'shard_a/bot.py'`) whenever a filename collision is detected, so crash/restart logs always tell them apart.
 
+### Bots that live inside a package (`bot_module`)
+
+If your bot isn't a standalone script — it's a module inside a package that uses package-relative imports (`from . import something`) — running it via `bot_file` fails exactly the way `python bot.py` would from the command line:
+
+```
+ImportError: attempted relative import with no known parent package
+```
+
+Use `bot_module` instead, which launches it as `python -m <module>` (exactly like running it yourself from the command line):
+
+```python
+import staypresent
+
+staypresent.run(bot_module="mypkg.bot")
+
+```
+
+It works the same way as `bot_file` everywhere else — pass a list for multiple bots, use `bot_args`/`env` for shared configuration, or mix file- and module-based bots together with per-bot config via `bots`:
+
+```python
+import staypresent
+
+staypresent.run(bots=[
+    {"file": "telegram_bot.py", "args": ["--verbose"]},        # a standalone script
+    {"module": "discord_bot.worker", "env": {"SHARD": "0"}},   # a module inside a package
+])
+
+```
+
+`bot_module`/`"module"` is mutually exclusive with `bot_file`/`"file"` — pass exactly one per bot. Unlike `bot_file`, a module path isn't checked for existence up front (verifying that safely would require importing it, which StayPresent deliberately avoids as a side effect) — a typo'd or missing module simply surfaces as that bot exiting non-zero, handled by the normal crash/restart logic above.
+
 ### How failures are handled with multiple bots
 
 * Each bot has its own independent restart counter, so `max_restarts` is a *per-bot* budget.
@@ -321,7 +353,8 @@ Launch your bot script(s) alongside the web server.
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `bot_file` | `str` or `list[str]` | `None` | Path to the Python script to run, or a list of paths to run several bots at once. Mutually exclusive with `bots`. |
+| `bot_file` | `str` or `list[str]` | `None` | Path to the Python script to run, or a list of paths to run several bots at once. Launched as `python <file> ...`. Mutually exclusive with `bot_module` and with `bots`. |
+| `bot_module` | `str` or `list[str]` | `None` | Dotted module path (e.g. `"mypkg.bot"`) to run instead of a bare script, or a list of them. Launched as `python -m <module> ...`. Use this when your bot lives inside a package and needs package-relative imports — see [Bots that live inside a package](#bots-that-live-inside-a-package-bot_module). Mutually exclusive with `bot_file` and with `bots`. |
 | `host` | `str` | `"0.0.0.0"` | Host to bind the web server to. |
 | `port` | `int` | `8080` | Port to bind the web server to. |
 | `production` | `bool` | `True` | Uses `waitress` if installed. Set to `False` to force the Flask dev server. |
@@ -330,9 +363,9 @@ Launch your bot script(s) alongside the web server.
 | `max_restarts` | `int` | `5` | Maximum restart attempts per bot after a crash before giving up. |
 | `restart_delay` | `float` | `2.0` | Seconds to wait before relaunching a bot process after a crash. |
 | `restart_reset_after` | `float` | `60.0` | Seconds a bot must stay alive to reset its consecutive crash counter back to 0. |
-| `bot_args` | `list` | `None` | Extra command-line arguments passed to every bot in `bot_file` (e.g., `["--verbose"]`). Must be a list — a bare string like `"--flag"` raises a clear error instead of silently exploding into individual characters. Ignored when `bots` is used. |
-| `env` | `dict` | `None` | Extra environment variables for every bot in `bot_file`. Merges over the current environment. Ignored when `bots` is used. |
-| `bots` | `list[dict]` | `None` | Per-bot configuration: `[{"file": "bot.py", "args": [...], "env": {...}}, ...]` (`args`/`env` optional per entry). Mutually exclusive with `bot_file`/`bot_args`/`env` — see [Running Multiple Bots](#-running-multiple-bots). |
+| `bot_args` | `list` | `None` | Extra command-line arguments passed to every bot in `bot_file`/`bot_module` (e.g., `["--verbose"]`). Must be a list — a bare string like `"--flag"` raises a clear error instead of silently exploding into individual characters. Ignored when `bots` is used. |
+| `env` | `dict` | `None` | Extra environment variables for every bot in `bot_file`/`bot_module`. Merges over the current environment. Ignored when `bots` is used. |
+| `bots` | `list[dict]` | `None` | Per-bot configuration: `[{"file": "bot.py", ...}, {"module": "mypkg.bot", ...}, ...]` — each entry needs exactly one of `"file"`/`"module"`, plus optional `"args"`/`"env"`. Mutually exclusive with `bot_file`/`bot_module`/`bot_args`/`env` — see [Running Multiple Bots](#-running-multiple-bots). |
 
 > **Note:** `port`, `threads`, `max_restarts`, `restart_delay`, and `restart_reset_after` are validated up front — passing an invalid value (e.g. `threads=0`, a negative `port`) raises a `ValueError` immediately instead of failing silently or deep inside `waitress`. Likewise, every bot file (in `bot_file` or `bots`) is checked to exist *before* the server starts.
 

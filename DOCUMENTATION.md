@@ -15,6 +15,7 @@ This is the complete reference for StayPresent: every parameter, every behavior,
    - [3.6 State Inspection](#36-state-inspection)
 4. [Process Execution (`staypresent.run`)](#4-process-execution-staypresentrun)
    - [4.1 Running Multiple Bots](#41-running-multiple-bots)
+   - [4.2 Bots Inside a Package (`bot_module`)](#42-bots-inside-a-package-bot_module)
 5. [Self-Ping / Keep-Warm (`staypresent.ping` / `staypresent.cron`)](#5-self-ping--keep-warm-staypresentping--staypresentcron)
 6. [Built-in Health Check](#6-built-in-health-check)
 7. [The Built-in Markdown Renderer](#7-the-built-in-markdown-renderer)
@@ -320,11 +321,53 @@ With multiple bots:
 
 **Log labels for bots with the same filename:** every log line about a bot (crash, restart, giving up) identifies it with a label like `bot[0] 'worker.py'`. Normally that's just the filename. But if two or more bots in the same `run()` call share a filename, using just the filename there would make otherwise-distinct bots indistinguishable in the logs — two lines both reading `bot[0] 'bot.py' crashed` / `bot[1] 'bot.py' crashed` force you to cross-reference your own list order to know which is which. StayPresent detects this automatically: whenever a filename collides with another bot's in the same run, every bot sharing that filename is labeled with its full file path instead (e.g. `bot[0] 'shard_a/bot.py'` / `bot[1] 'shard_b/bot.py'`), so the logs stay unambiguous. Bots with a filename that doesn't collide with anything keep the shorter, plain filename label.
 
+### 4.2 Bots Inside a Package (`bot_module`)
+
+`bot_file` runs a bot the same way `python <file>` would from the command line — which breaks for a bot that's actually a module inside a package relying on package-relative imports (`from . import something`):
+
+```
+ImportError: attempted relative import with no known parent package
+
+```
+
+`bot_module` runs it the way `python -m <module>` would instead — exactly as if you'd typed that yourself from the project root:
+
+```python
+import staypresent
+
+staypresent.run(bot_module="mypkg.bot")
+
+```
+
+It mirrors `bot_file` everywhere else:
+
+* A single string or a list of strings, for one or several module-based bots.
+* `bot_args`/`env` apply identically to every module in the list, same as with `bot_file`.
+* In `bots`, use `"module"` instead of `"file"` per entry — and you can freely mix file-based and module-based bots in the same `bots` list:
+
+```python
+import staypresent
+
+staypresent.run(bots=[
+    {"file": "telegram_bot.py", "args": ["--verbose"]},
+    {"module": "discord_bot.worker", "env": {"SHARD": "0"}},
+])
+
+```
+
+**Rules and differences from `bot_file`:**
+
+* `bot_module` is mutually exclusive with `bot_file` at the top level (`TypeError` if both are given); in `bots`, each entry must set exactly one of `"file"`/`"module"` (`TypeError` if both or neither are set).
+* Unlike a file path, a module path is **not** checked for existence before the server starts. Verifying a module is importable safely requires actually importing it (running its parent packages' `__init__.py`), which `run()` deliberately avoids as a side effect in the orchestrating process. A missing or misspelled module therefore isn't caught up front the way a missing file is — instead, that bot process starts, Python itself reports `No module named '...'`, and it exits non-zero, which is then handled by the normal crash/restart logic like any other crash.
+* The subprocess is launched with the same working directory as your orchestrating script (`staypresent.run()`'s caller) — so `bot_module="mypkg.bot"` needs to be resolvable from wherever you actually run your script, exactly like typing `python -m mypkg.bot` from that same location would.
+* Log labels for module-based bots use the dotted module name (e.g. `bot[0] 'mypkg.bot'`). The same filename-collision handling from above applies to module names too — if two bots share the exact same module string, there's no more specific fallback than the module name itself (unlike a file path, a module name has no further-qualifying "directory" to fall back to), so those log lines are distinguished only by their `bot[i]` index.
+
 ### Execution Parameters
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `bot_file` | `str` or `list[str]` | `None` | Target Python script(s) to execute concurrently. Mutually exclusive with `bots`. |
+| `bot_file` | `str` or `list[str]` | `None` | Target Python script(s) to execute concurrently, launched as `python <file> ...`. Mutually exclusive with `bot_module` and with `bots`. |
+| `bot_module` | `str` or `list[str]` | `None` | Dotted module path(s) to execute concurrently instead, launched as `python -m <module> ...`. See [Section 4.2](#42-bots-inside-a-package-bot_module). Mutually exclusive with `bot_file` and with `bots`. |
 | `host` | `str` | `"0.0.0.0"` | Network interface to bind the web server. |
 | `port` | `int` | `8080` | Port allocation for the web server. Must be between 0 and 65535. |
 | `production` | `bool` | `True` | Utilizes `waitress` if available. Set to `False` to force Flask's dev server. |
@@ -333,9 +376,9 @@ With multiple bots:
 | `max_restarts` | `int` | `5` | Maximum consecutive restart attempts, per bot. Must be `>= 0`. |
 | `restart_delay` | `float` | `2.0` | Seconds to wait before process respawn. Must be `>= 0`. |
 | `restart_reset_after` | `float` | `60.0` | Seconds of continuous uptime required to reset a bot's crash counter to zero. Must be `>= 0`. |
-| `bot_args` | `list` | `None` | CLI arguments to pass to every bot in `bot_file` (e.g., `["--verbose"]`). Must be a list, not a bare string. Ignored when `bots` is used. |
-| `env` | `dict` | `None` | Environment variables injected into every bot in `bot_file`, merged over the current process's environment. Ignored when `bots` is used. |
-| `bots` | `list[dict]` | `None` | Per-bot configuration: `[{"file": ..., "args": [...], "env": {...}}, ...]`. Mutually exclusive with `bot_file`/`bot_args`/`env`. |
+| `bot_args` | `list` | `None` | CLI arguments to pass to every bot in `bot_file`/`bot_module` (e.g., `["--verbose"]`). Must be a list, not a bare string. Ignored when `bots` is used. |
+| `env` | `dict` | `None` | Environment variables injected into every bot in `bot_file`/`bot_module`, merged over the current process's environment. Ignored when `bots` is used. |
+| `bots` | `list[dict]` | `None` | Per-bot configuration: `[{"file": ...}, {"module": ...}, ...]`, each with optional `"args"`/`"env"` — exactly one of `"file"`/`"module"` per entry. Mutually exclusive with `bot_file`/`bot_module`/`bot_args`/`env`. |
 
 ### Crash Recovery Protocol
 
@@ -479,7 +522,7 @@ This is a lightweight renderer, not a full CommonMark implementation. It does no
 
 ### `staypresent`
 
-* **`run(bot_file: str | list[str] = None, host: str = "0.0.0.0", port: int = 8080, production: bool = True, threads: int = 4, restart_on_crash: bool = True, max_restarts: int = 5, restart_delay: float = 2.0, restart_reset_after: float = 60.0, bot_args: list = None, env: dict = None, bots: list[dict] = None)`** – Starts the HTTP server and manages the lifecycle of one or more bot processes.
+* **`run(bot_file: str | list[str] = None, bot_module: str | list[str] = None, host: str = "0.0.0.0", port: int = 8080, production: bool = True, threads: int = 4, restart_on_crash: bool = True, max_restarts: int = 5, restart_delay: float = 2.0, restart_reset_after: float = 60.0, bot_args: list = None, env: dict = None, bots: list[dict] = None)`** – Starts the HTTP server and manages the lifecycle of one or more bot processes.
 * **`ping(host: str, port: int = None, path: str = "/", timeout: float = 10.0, https: bool = None) -> dict`** – Sends a synchronous HTTP request.
 * **`cron(host: str, port: int = None, path: str = "/", interval: float = 300.0, repeat: bool = True, timeout: float = 10.0, https: bool = None, on_success=None, on_failure=None) -> CronHandle`** – Runs scheduled background keep-warm requests.
 
@@ -544,6 +587,18 @@ staypresent.run(["telegram_bot.py", "discord_bot.py"])
 ```
 
 Each bot is supervised (and restarted on crash) independently. For per-bot arguments or environment variables, use the `bots` parameter instead — see [Section 4.1](#41-running-multiple-bots).
+
+---
+
+### My bot uses relative imports and fails with `ImportError: attempted relative import`. What do I do?
+
+Use `bot_module` instead of `bot_file`. `bot_file` runs your bot the way `python bot.py` would, which breaks package-relative imports (`from . import something`) the exact same way running it directly from the command line would. `bot_module` runs it as `python -m mypkg.bot` instead:
+
+```python
+staypresent.run(bot_module="mypkg.bot")
+```
+
+See [Section 4.2](#42-bots-inside-a-package-bot_module) for the full rules, including how to mix file- and module-based bots together via `bots`.
 
 ---
 
