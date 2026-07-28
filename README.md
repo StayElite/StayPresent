@@ -1,11 +1,11 @@
 <h1 align="center">StayPresent</h1>
 <p align="center">
-  <a href="https://github.com/NTDevLops/StayPresent/"><img src="https://i.ibb.co/nXKNzwf/Stay-Present-2.png" alt="StayPresent Logo" height="225"></a>
+  <a href="https://github.com/StayElite/StayPresent/"><img src="https://i.ibb.co/nXKNzwf/Stay-Present-2.png" alt="StayPresent Logo" height="225"></a>
 </p>
 <p align="center">
   <a href="https://pypi.org/project/staypresent/"><img src="https://img.shields.io/pypi/v/staypresent.svg" alt="PyPI version"></a>
   <a href="https://pypi.org/project/staypresent/"><img src="https://img.shields.io/pypi/pyversions/staypresent.svg" alt="Python versions"></a>
-  <a href="https://github.com/NTDevLops/StayPresent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <a href="https://github.com/StayElite/StayPresent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
 </p>
 <p align="center">
   <a href="https://pypi.org/project/staypresent/"><img src="https://static.pepy.tech/personalized-badge/staypresent?period=weekly&units=INTERNATIONAL_SYSTEM&left_color=GREY&right_color=RED&left_text=downloads%2Fweek" alt="Downloads per week"></a>
@@ -36,7 +36,7 @@ Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **He
 
 ---
 
-> 📖 **Full Documentation:** For complete documentation, API reference, deployment guides, and FAQs, open [DOCUMENTATION.md](https://github.com/NTDevLops/StayPresent/blob/main/DOCUMENTATION.md).
+> 📖 **Full Documentation:** For complete documentation, API reference, deployment guides, and FAQs, open [DOCUMENTATION.md](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md).
 
 ---
 

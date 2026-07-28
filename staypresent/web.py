@@ -8,10 +8,12 @@ _lock = threading.Lock()
 
 _DEFAULT_PATH = "/"
 
-# Paths StayPresent itself owns - registering a response here would silently
-# never be served, since server.py wires up a dedicated Flask route for them
-# that always wins over the catch-all route used for user-registered paths.
-_RESERVED_PATHS = {"/health"}
+# Paths Stay Present ships a built-in default for. Registering a response
+# at one of these paths overrides that default (see server.py's catch_all,
+# which only falls back to the built-in behavior when nothing is
+# registered here) - it's not blocked the way truly internal paths would
+# be, since there currently are none.
+_BUILTIN_DEFAULT_PATHS = {"/health"}
 
 # Internal response state, keyed by path so multiple responses can be hosted
 # at once (e.g. one bot's status at "/", another's at "/bot2", a dashboard
@@ -45,12 +47,6 @@ def _normalize_path(path: str) -> str:
     if len(normalized) > 1 and normalized.endswith("/"):
         normalized = normalized.rstrip("/")
 
-    if normalized in _RESERVED_PATHS:
-        raise ValueError(
-            f"staypresent.web: path '{normalized}' is reserved for StayPresent's built-in "
-            "health check and can't be overridden."
-        )
-
     return normalized
 
 
@@ -80,16 +76,47 @@ def html(file_path: str, path: str = "/") -> None:
         _routes[p] = {"type": "html", "value": os.path.abspath(file_path)}
 
 
-def markdown(file_path: str, path: str = "/") -> None:
+_VALID_MARKDOWN_MODES = ("light", "dark", "auto")
+
+
+def markdown(
+    file_path: str,
+    path: str = "/",
+    mode: str = "auto",
+    favicon: str = None,
+    title: str = None,
+    description: str = None,
+) -> None:
     
+
     if not os.path.isfile(file_path):
         raise FileNotFoundError(
             f"staypresent.web.markdown(): file '{file_path}' does not exist or is not a file."
         )
 
+    if not isinstance(mode, str) or mode.strip().lower() not in _VALID_MARKDOWN_MODES:
+        raise ValueError(
+            "staypresent.web.markdown(): 'mode' must be one of 'light', 'dark', or "
+            f"'auto', got {mode!r}."
+        )
+    mode = mode.strip().lower()
+
+    for name, value in (("favicon", favicon), ("title", title), ("description", description)):
+        if value is not None and not isinstance(value, str):
+            raise TypeError(
+                f"staypresent.web.markdown(): '{name}' must be a str or None, got {type(value).__name__}."
+            )
+
     p = _normalize_path(path)
     with _lock:
-        _routes[p] = {"type": "markdown", "value": os.path.abspath(file_path)}
+        _routes[p] = {
+            "type": "markdown",
+            "value": os.path.abspath(file_path),
+            "mode": mode,
+            "favicon": favicon,
+            "title": title,
+            "description": description,
+        }
 
 
 def remove(path: str = "/") -> bool:

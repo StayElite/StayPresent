@@ -30,22 +30,52 @@ def _render_html_file(file_path: str) -> Response:
     return Response(content, mimetype="text/html")
 
 
-def _render_markdown_file(file_path: str) -> Response:
+def _render_markdown_file(
+    file_path: str,
+    mode: str = "auto",
+    favicon: str = None,
+    title: str = None,
+    description: str = None,
+) -> Response:
     with open(file_path, "r", encoding="utf-8") as f:
         source = f.read()
 
     body = _render_markdown(source)
+
+    # mode="dark" / "light" forces that color scheme regardless of the
+    # visitor's OS/browser preference; "auto" (the default) follows it.
+    mode = (mode or "auto").strip().lower()
+    if mode not in ("light", "dark", "auto"):
+        mode = "auto"
+    theme_attr = "" if mode == "auto" else f' data-theme="{mode}"'
+    color_scheme = "light dark" if mode == "auto" else mode
+
+    page_title = title if title else os.path.basename(file_path)
+    head_extra = []
+    if favicon:
+        # A direct URL (http(s)://, //) is used as-is; anything else is
+        # treated as a path relative to this file's own directory, resolved
+        # the exact same way neighboring assets (CSS, images) referenced
+        # from inside an html()/markdown() file already are.
+        head_extra.append(f'<link rel="icon" href="{_html_escape.escape(favicon, quote=True)}">')
+    if description:
+        esc_description = _html_escape.escape(description, quote=True)
+        head_extra.append(f'<meta name="description" content="{esc_description}">')
+        head_extra.append(f'<meta property="og:description" content="{esc_description}">')
+    if title:
+        head_extra.append(f'<meta property="og:title" content="{_html_escape.escape(title, quote=True)}">')
 
     page = (
         "<!DOCTYPE html>\n"
         "<html>\n"
         "<head>\n"
         "<meta charset=\"utf-8\">\n"
-        f"<title>{_html_escape.escape(os.path.basename(file_path))}</title>\n"
-        "<meta name=\"color-scheme\" content=\"light dark\">\n"
-        f"<style>{STAYPRESENT_MARKDOWN_CSS}</style>\n"
+        f"<title>{_html_escape.escape(page_title)}</title>\n"
+        f"<meta name=\"color-scheme\" content=\"{color_scheme}\">\n"
+        + "".join(tag + "\n" for tag in head_extra)
+        + f"<style>{STAYPRESENT_MARKDOWN_CSS}</style>\n"
         "</head>\n"
-        f"<body><article class=\"markdown-body\">{body}</article></body>\n"
+        f"<body><article class=\"markdown-body\"{theme_attr}>{body}</article></body>\n"
         "</html>"
     )
     return Response(page, mimetype="text/html")
@@ -63,7 +93,13 @@ def _render_response(state: dict):
 
     if response_type == "markdown":
         try:
-            return _render_markdown_file(value)
+            return _render_markdown_file(
+                value,
+                mode=state.get("mode", "auto"),
+                favicon=state.get("favicon"),
+                title=state.get("title"),
+                description=state.get("description"),
+            )
         except (OSError, UnicodeDecodeError) as exc:
             return jsonify({"error": f"Could not read Markdown file: {exc}"}), 500
 
@@ -80,11 +116,6 @@ def _render_response(state: dict):
     if isinstance(value, (dict, list)):
         return jsonify(value)
     return str(value)
-
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
 
 
 def _find_asset_owner(request_path: str):
@@ -116,6 +147,12 @@ def catch_all(req_path):
         canonical = "/"
 
     state = web.get(canonical)
+    if not state and canonical == "/health":
+        # Stay Present's built-in default - only used when the user hasn't
+        # registered their own response at "/health" (see below: once they
+        # do, `state` is truthy and this fallback is simply never reached).
+        return jsonify({"status": "ok"})
+
     if state:
         response_type = state.get("type")
         if response_type in ("html", "markdown") and canonical != "/" and not had_trailing_slash:

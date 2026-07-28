@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "staypresent"
-version = "1.5.2"
+version = "1.5.3"
 description = "Keep your Python bots alive with a zero-config, production-ready background web server."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
-  { name = "Ashish Sharma as NTDevLops" }
+  { name = "Ashish Sharma (Stay Elite)" }
 ]
 requires-python = ">=3.8"
 
@@ -68,7 +68,7 @@ prod = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/NTDevLops/staypresent"
-Repository = "https://github.com/NTDevLops/staypresent"
-Issues = "https://github.com/NTDevLops/staypresent/issues"
-Documentation = "https://github.com/NTDevLops/StayPresent/blob/main/DOCUMENTATION.md"
+Homepage = "https://github.com/StayElite/staypresent"
+Repository = "https://github.com/StayElite/staypresent"
+Issues = "https://github.com/StayElite/staypresent/issues"
+Documentation = "https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md"
