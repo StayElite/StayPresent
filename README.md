@@ -15,7 +15,7 @@
 
 ### 🛖 About
 
-A lightweight Python package designed to keep your bots and background scripts alive by running a dedicated Flask web server alongside your main application.
+A lightweight Python package designed to keep your bots and background scripts alive by running a dedicated Flask web server alongside your main application(s).
 
 Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **Heroku**, or any host that requires an active HTTP port to keep your service running.
 
@@ -25,7 +25,13 @@ Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **He
 
 - [Features](#-features)
 - [Installation](#-installation)
+- [Quickstart](#-quickstart)
 - [Usage Guide](#-usage-guide)
+  - [Text Response](#text-response)
+  - [JSON Response](#json-response)
+  - [HTML Response](#html-response)
+  - [Markdown Response](#markdown-response)
+  - [Custom Host, Port, and Threads](#custom-host-port-and-threads-complete-example)
 - [Custom Paths & Multiple Responses](#-custom-paths--multiple-responses)
 - [Running Multiple Bots](#-running-multiple-bots)
 - [Self-Ping / Keep-Warm](#-self-ping--keep-warm)
@@ -38,114 +44,101 @@ Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **He
 
 > 📖 **Full Documentation:** For complete documentation, API reference, deployment guides, and FAQs, open [DOCUMENTATION.md](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md).
 
----
-
-## 🚀 Features
+## ✨ Features
 
 * **Zero-Friction Setup:** Get running with just one line of code.
 * **Production-Ready by Default:** Automatically detects and uses `waitress` to avoid Flask's "development server" warnings.
-* **Multiple Bot Support:** Run several bot processes side-by-side under one web server, each monitored and restarted independently.
-* **Auto-Restarts & Crash Recovery:** Automatically respawns any bot process if it crashes, complete with customizable delays and max-restart limits (per bot).
-* **Flexible Responses:** Serve custom plain text, JSON (default), full HTML templates, or Markdown files rendered to HTML with StayPresent's own built-in renderer (no extra dependency required).
+* **Multiple Bot Support:** Run several bot processes side-by-side under one web server, each monitored and restarted independently, with shared or per-bot arguments/environment variables.
+* **Auto-Restarts & Crash Recovery:** Automatically respawns any bot process if it crashes, complete with customizable delays and consecutive-crash budgets — per bot.
+* **Flexible Responses:** Serve custom plain text, JSON (default), full HTML templates, or beautifully rendered Markdown.
+* **Built-in Markdown Renderer — Zero Extra Dependencies:** Headings, emphasis, strikethrough, links, images, autolinks, nested lists, nested blockquotes, tables, fenced/indented code blocks, raw HTML passthrough, and a GitHub-flavored stylesheet — no `markdown` package required.
+* **Light / Dark / Auto Theming:** Every Markdown page can be forced to `light` or `dark`, or left on `auto` (default) to automatically follow the visitor's own OS/browser preference.
+* **Page Metadata for Markdown Pages:** Set a custom favicon, `<title>`, and meta/Open Graph description directly from Python — no template editing needed.
 * **Custom Paths, Multiple Responses:** Host more than one response at once at different paths (e.g. `/`, `/status`, `/dashboard`) — handy for multi-bot setups where each bot gets its own endpoint.
-* **Static Asset Serving:** Automatically serves CSS, JS, and images located next to your HTML/Markdown files, scoped correctly even when several are hosted at different paths.
-* **Advanced Control:** Easily pass custom command-line arguments and environment variables directly to your bot process(es), shared or per-bot.
-* **Fail-Safe Logging:** Logs a clear error if the underlying web server dies unexpectedly.
+* **Static Asset Serving:** Automatically serves CSS, JS, images, and favicons located next to your HTML/Markdown files, scoped correctly even when several are hosted at different paths.
+* **Advanced Process Control:** Easily pass custom command-line arguments and environment variables directly to your bot process(es), shared across all of them or configured individually per bot.
+* **Fail-Safe Logging:** Logs a clear, dedicated error if the underlying web server dies unexpectedly, and never touches Python's root logger.
 * **Optional Self-Ping / Keep-Warm:** Periodically ping your own public URL in the background to prevent free-tier hosts from spinning your service down due to inactivity — fully opt-in, off by default.
 
 ---
 
 ## 📦 Installation
 
-Install via pip:
+**Standard Installation:**
 
 ```bash
 pip install staypresent
 
 ```
 
-**Recommended for Production:**
-To automatically use a production WSGI server and suppress Flask development warnings, install the `prod` extra. This pulls in [`waitress`](https://pypi.org/project/waitress/).
+**Production Installation (Recommended):**
+
+To suppress Flask's development-server warning and use a production-grade WSGI server, install the `prod` extra. This automatically provisions [`waitress`](https://pypi.org/project/waitress/).
 
 ```bash
 pip install staypresent[prod]
 
 ```
 
-*(Note: If `waitress` isn't installed, StayPresent gracefully falls back to Flask's built-in development server and logs a one-time warning.)*
-
-Markdown rendering (`staypresent.web.markdown(...)`) works out of the box — StayPresent ships its own dependency-free Markdown-to-HTML renderer, so there's nothing extra to install for it.
+*(Note: If `waitress` isn't installed, StayPresent gracefully falls back to Flask's built-in development server and logs a one-time warning. Nothing else is required — Markdown rendering, tables, theming, and everything else described below works out of the box with no additional packages.)*
 
 ---
 
-## 💻 Usage Guide
-
-### Basic Usage (Text Response)
+## 🚀 Quickstart
 
 ```python
 import staypresent
 
-staypresent.web.text("Made With ❤️")
 staypresent.run("bot.py")
 
 ```
 
-*Navigating to `http://localhost:8080` will return plain text: `Made With ❤️*`
+That's it. This starts a background web server (defaulting to `0.0.0.0:8080`, serving `{"message": "I'm Present"}` at `/`) and runs `bot.py` alongside it, automatically restarting it if it ever crashes.
 
-> **Note:** If you don't configure a response, StayPresent defaults to a JSON response of `{"message": "I'm Present"}` at the root `/` route.
+---
+
+## 📘 Usage Guide
+
+By default, if you don't configure anything via `staypresent.web`, the root path (`/`) returns a JSON response: `{"message": "I'm Present"}`. Every function below accepts an optional `path` argument to host more than one response at once — see [Custom Paths & Multiple Responses](#-custom-paths--multiple-responses).
+
+### Text Response
+
+```python
+import staypresent
+
+staypresent.web.text("Service is Online")
+staypresent.run("bot.py")
+
+```
 
 ### JSON Response
-
-A safe copy of your dictionary is stored. If you need to update live data, just call `staypresent.web.json()` again.
 
 ```python
 import staypresent
 
 staypresent.web.json({
     "status": "online",
-    "developer": "John",
-    "message": "Made With Love ❤️"
+    "uptime": "24h"
 })
-
 staypresent.run("bot.py")
 
 ```
 
-### HTML Response (with Static Files)
+### HTML Response
 
-Serve a full HTML page. The file is read fresh on every request, allowing you to edit your HTML on disk without restarting your bot.
+Serve a full HTML file. Any CSS/JS/images referenced next to it are served automatically.
 
 ```python
 import staypresent
 
-# The path is validated immediately and will raise a FileNotFoundError if missing
 staypresent.web.html("template/index.html")
 staypresent.run("bot.py")
 
 ```
 
-**Serving Static Assets:**
-Any files (CSS, JS, images) in the same directory as your HTML file are automatically served. Path traversal is strictly blocked for security.
-
-```html
-<!-- template/index.html -->
-<!DOCTYPE html>
-<html>
-  <head>
-    <title>My Bot</title>
-    <link rel="stylesheet" href="style.css">
-  </head>
-  <body>
-    <h1>I'm alive!</h1>
-    <img src="images/logo.png">
-  </body>
-</html>
-
-```
-
 ### Markdown Response
 
-Serve a `.md` file, rendered to HTML. Like `html()`, the file is re-read (and re-rendered) fresh on every request.
+Serve a `.md` file, rendered to clean, styled HTML — headings, emphasis, links, images, lists, blockquotes, tables, and fenced code blocks are all supported out of the box, with **no extra dependency required**. The file is re-read (and re-rendered) fresh on every request, so editing it on disk shows up immediately.
 
 ```python
 import staypresent
@@ -155,25 +148,44 @@ staypresent.run("bot.py")
 
 ```
 
-Rendering is handled by StayPresent's own built-in Markdown-to-HTML renderer — no extra package required. It covers headings (with anchor IDs), paragraphs, bold/italic/strikethrough, inline and fenced code blocks, links and images, blockquotes, ordered/unordered lists (including nesting), tables with column alignment, horizontal rules, and hard line breaks.
+The rendered page uses a GitHub-flavored stylesheet and automatically matches the visitor's light/dark preference. You can also customize the theme and page metadata:
 
-Files (like images) next to your `.md` file are served automatically, the same as with `html()`.
+```python
+import staypresent
+
+staypresent.web.markdown(
+    "docs/guide.md",
+    path="/docs",
+    mode="dark",                              # "light", "dark", or "auto" (default)
+    favicon="favicon.png",                    # a file next to guide.md, or a direct URL
+    title="Project Docs",                     # page <title> + Open Graph title
+    description="Everything you need to get started.",  # meta + Open Graph description
+)
+staypresent.run("bot.py")
+
+```
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `mode` | `"auto"` | `"auto"` follows the visitor's OS/browser color-scheme preference automatically. `"light"`/`"dark"` force that scheme for every visitor regardless of their own setting. |
+| `favicon` | `None` | A direct URL (`http://`, `https://`, or `//...`) is used as-is. Anything else (e.g. `"favicon.png"`) is treated as a file next to your Markdown file — the same way neighboring CSS/images already are — and must exist there to be served correctly. |
+| `title` | `None` | Sets the page `<title>` and Open Graph title. Defaults to the Markdown file's own filename when omitted. |
+| `description` | `None` | Adds a `<meta name="description">` tag and an Open Graph description tag — useful for link-preview cards when the URL is shared on social media/chat apps. |
+
+Files (images, etc.) next to your `.md` file are served automatically, exactly the same as with `html()`.
 
 ### Custom Host, Port, and Threads (Complete Example)
 
 ```python
 import staypresent
 
-staypresent.web.json({
-    "status": "Running",
-    "version": "1.0.0"
-})
+staypresent.web.json({"status": "running"})
 
 staypresent.run(
     "bot.py",
     host="0.0.0.0",
-    port=8080,
-    threads=8  # Increase if receiving real web traffic
+    port=5000,
+    threads=8
 )
 
 ```
@@ -196,7 +208,7 @@ staypresent.run("bot.py")
 
 ```
 
-> **Note on trailing slashes:** for `html()`/`markdown()` at any path other than `"/"`, StayPresent automatically redirects `/dashboard` → `/dashboard/`. This isn't optional — it's what makes relative asset links inside your file (`<link href="style.css">`, `<img src="images/logo.png">`) resolve correctly against that file's own directory instead of its parent. `text()`/`json()` responses don't need this since they have no static assets to resolve.
+> **Note on trailing slashes:** for `html()`/`markdown()` at any path other than `"/"`, StayPresent automatically redirects `/dashboard` → `/dashboard/`. This isn't optional — it's what makes relative asset links inside your file (`<link href="style.css">`, `<img src="images/logo.png">`, a relative `favicon`) resolve correctly against that file's own directory instead of its parent. `text()`/`json()` responses don't need this since they have no static assets to resolve.
 
 A handful of small helpers make working with multiple paths easier:
 
@@ -208,7 +220,7 @@ staypresent.web.remove("/bot2")         # stop hosting a response, returns True/
 
 ```
 
-> **Reserved path:** `/health` is reserved for StayPresent's built-in health check endpoint (see below) and can't be overridden — attempting to `staypresent.web.text(..., path="/health")` raises a `ValueError`.
+> **Note on `/health`:** StayPresent has a built-in default at `/health` returning `{"status": "ok"}` (see [Built-in Health Check](#built-in-health-check) below). It's a default, not a reservation — if you register your own response at `/health` via `staypresent.web`, yours is served instead.
 
 ---
 
@@ -259,72 +271,45 @@ staypresent.run(bots=[
 
 ## 📡 Self-Ping / Keep-Warm
 
-Some free hosting tiers (Render, Railway, Replit, etc.) spin your service down after a period of inactivity, and only wake it back up on the next incoming request. `staypresent.ping()` and `staypresent.cron()` are a completely optional way to work around this by having your app periodically hit its own **public** URL — nothing runs unless you call one of them yourself.
+Some free-tier hosts spin your service down after a period of inactivity, even if `staypresent.run()` has an open port. `staypresent.ping()`/`staypresent.cron()` let you periodically hit your own public URL to keep it warm — entirely optional and off by default.
 
-> ⚠️ **Ping your public URL, not `127.0.0.1`/`0.0.0.0`.** Traffic that never leaves the machine doesn't count as activity to the hosting platform. `staypresent.cron("https://your-app.onrender.com")` works for that; `staypresent.cron("0.0.0.0", port=8080)` is only useful for locally smoke-testing that your own server is responding.
-
-### `staypresent.ping(...)` — one-off check
-
-Synchronous — fires a single HTTP GET and returns immediately with the result.
-
-```python
-result = staypresent.ping("https://my-app.onrender.com")
-# -> {"url": "...", "ok": True, "status_code": 200, "elapsed": 0.31, "error": None}
-
-if not result["ok"]:
-    print("Something's wrong:", result["error"])
-```
-
-### `staypresent.cron(...)` — repeat on a schedule
-
-Non-blocking — starts a background thread that calls `ping()` on a schedule. Call it before `staypresent.run()`.
+### One-off ping
 
 ```python
 import staypresent
 
-# Ping our own public URL every 4 minutes to keep the free-tier instance awake
-staypresent.cron("https://my-app.onrender.com", interval=240)
+result = staypresent.ping("https://my-bot.onrender.com")
+print(result)
+# {'url': 'https://my-bot.onrender.com/', 'ok': True, 'status_code': 200, 'elapsed': 0.42, 'error': None}
+
+```
+
+### Recurring keep-warm pings
+
+```python
+import staypresent
+
+staypresent.web.json({"status": "online"})
+
+handle = staypresent.cron("https://my-bot.onrender.com", interval=300)  # every 5 minutes
 
 staypresent.run("bot.py")
+
 ```
 
-With callbacks, e.g. to log failures somewhere more visible:
+`cron()` returns a `CronHandle` you can use to stop it later:
 
 ```python
-staypresent.cron(
-    "https://my-app.onrender.com",
-    interval=240,
-    on_success=lambda r: print(f"warm ping ok ({r['elapsed']}s)"),
-    on_failure=lambda r: print(f"warm ping failed: {r['error']}"),
-)
+handle.stop()               # stop the background pinger
+handle.is_running           # True/False
+
 ```
 
-`host` accepts a bare domain (`"my-app.onrender.com"`), a full URL (`"https://my-app.onrender.com/health"`), or a local bind address (`"0.0.0.0"`, treated as `127.0.0.1`) — same rules for both `ping()` and `cron()`.
-
-`cron()` returns a handle if you ever need to cancel it:
-
-```python
-handle = staypresent.cron("https://my-app.onrender.com", interval=240)
-...
-handle.stop()          # stop pinging
-handle.is_running       # True/False
-```
-
-Starting and stopping are both logged (`Started cron: pinging ... every 240s`), so you can confirm it's actually active. Pings run one at a time — if a ping takes a while to time out, the actual gap before the next one grows accordingly rather than piling up requests in parallel.
-
-| Parameter | Type | Default | Description |
-| --- | --- | --- | --- |
-| `host` | `str` | **Required** | Bare domain, full URL, or bind address (see above). |
-| `port` | `int` | `None` | Port to connect to. Ignored if `host` is already a full URL. |
-| `path` | `str` | `"/"` | Path to request. Ignored if `host` is already a full URL. |
-| `timeout` | `float` | `10.0` | Seconds to wait for a response before treating the ping as failed. |
-| `https` | `bool` | `None` | Force `http`/`https`. Auto-detected by default (local addresses → `http`, everything else → `https`). |
-| `interval` *(cron only)* | `float` | `300.0` | Seconds between pings. |
-| `repeat` *(cron only)* | `bool` | `True` | Keep pinging forever, or just once in the background. |
-| `on_success` *(cron only)* | `callable` | `None` | `fn(result)` called after each successful ping. |
-| `on_failure` *(cron only)* | `callable` | `None` | `fn(result)` called after each failed ping. |
+You can also pass `on_success`/`on_failure` callbacks to react to each ping's result (e.g. for your own logging/metrics), and pass `host="127.0.0.1", port=8080` instead of a full URL if you just want to ping your own local server.
 
 ---
+
+## ⚙️ API Reference
 
 ### `staypresent.run(...)`
 
@@ -357,44 +342,35 @@ StayPresent automatically monitors every bot process. If one exits with a non-ze
 * **Smart Counters:** The `max_restarts` limit applies to *consecutive* crashes, per bot. If a bot runs successfully for the duration of `restart_reset_after` (default 60 seconds), its crash counter resets.
 * **Non-Zero Exit on Giving Up:** `staypresent.run()` waits for every bot to finish. If any bot ultimately failed to stay up — restarts disabled and it crashed, or `max_restarts` was exhausted for it — `staypresent.run()` then exits the whole process with a non-zero exit code instead of returning normally. This lets a hosting platform's own restart-on-crash policy (Render, Railway, Docker, systemd, etc.) kick in as a last resort, instead of the process quietly exiting `0` as if nothing went wrong.
 
-### Built-in Health Check
-
-A dedicated `/health` endpoint is automatically exposed, returning `{"status": "ok"}`. This is incredibly useful for platform pingers and uptime monitors that require a dedicated health-check path separate from your regular response(s). Because it's built in, `/health` is a reserved path — you can't register your own response there.
-
-### `staypresent.web` Reference
+### `staypresent.web`
 
 | Function | Description |
 | --- | --- |
 | `text(message, path="/")` | Serve plain text at `path`. |
 | `json(data, path="/")` | Serve a JSON-serializable dict/list at `path`. A deep copy is stored. |
 | `html(file_path, path="/")` | Serve an HTML file (read fresh every request) at `path`, plus its neighboring static assets. |
-| `markdown(file_path, path="/")` | Serve a Markdown file, rendered to HTML (read + re-rendered fresh every request) at `path`, plus its neighboring static assets. |
+| `markdown(file_path, path="/", mode="auto", favicon=None, title=None, description=None)` | Serve a Markdown file, rendered to styled HTML (read + re-rendered fresh every request) at `path`, plus its neighboring static assets. See [Markdown Response](#markdown-response) for the theming/metadata parameters. |
 | `remove(path="/")` | Stop hosting a response at `path`. Returns `True`/`False`. |
-| `get(path="/")` | Returns `{"type": ..., "value": ...}` for `path`, or `{}` if nothing is registered there. |
+| `get(path="/")` | Returns `{"type": ..., "value": ...}` (plus `mode`/`favicon`/`title`/`description` for a Markdown entry) for `path`, or `{}` if nothing is registered there. |
 | `get_all()` | Returns every registered path and its state as a single dict. |
 | `paths()` | Returns a sorted list of every currently-registered path. |
 
-### Inspecting the Current Response
+### Built-in Health Check
 
-```python
-staypresent.web.get()
-# -> {"type": "json", "value": {"message": "I'm Present"}}
-```
+A default `/health` endpoint is available out of the box, returning `{"status": "ok"}`. This is incredibly useful for platform pingers and uptime monitors that require a dedicated health-check path separate from your regular response(s). It's a default, not a reservation — registering your own response at `/health` via `staypresent.web` overrides it.
 
-Returns whatever was last configured for `path` (default `"/"`) via `text()` / `json()` / `html()` / `markdown()`, as `{"type": ..., "value": ...}`. Mainly useful for debugging or unit-testing your own code around StayPresent.
+### `staypresent.ping(...)` / `staypresent.cron(...)`
+
+| Function | Description |
+| --- | --- |
+| `ping(host, port=None, path="/", timeout=10.0, https=None)` | Send a single HTTP request and return `{"url", "ok", "status_code", "elapsed", "error"}`. |
+| `cron(host, port=None, path="/", interval=300.0, repeat=True, timeout=10.0, https=None, on_success=None, on_failure=None)` | Start a background thread that pings a URL on a schedule. Returns a `CronHandle` (`.stop()`, `.is_running`). |
 
 ---
 
-## 📝 Logging
+## 🪵 Logging
 
-StayPresent logs to its own `"staypresent"` logger, not the root logger — it never calls `logging.basicConfig()` globally. This means it won't clobber, duplicate, or reformat logging you've already set up elsewhere in your script for unrelated loggers.
-
-To change the log level or format, configure it like any other logger:
-
-```python
-import logging
-logging.getLogger("staypresent").setLevel(logging.WARNING)
-```
+StayPresent logs to its own `"staypresent"` logger (via a dedicated `StreamHandler`), never touching Python's root logger — so it won't clobber, duplicate, or reformat log output your bot script has already configured for its own loggers. Startup, restarts, crashes, and shutdowns are all logged with timestamps at the appropriate level (`INFO`/`WARNING`/`ERROR`).
 
 ---
 
@@ -404,16 +380,13 @@ logging.getLogger("staypresent").setLevel(logging.WARNING)
 * Flask
 * `waitress` *(optional, but highly recommended for production — `pip install staypresent[prod]`)*
 
-Markdown rendering has no extra dependency — StayPresent renders it itself.
-
-## 💡 Use Cases
-
-* Discord & Telegram Bots
-* Background Workers & Automation Scripts
-* Keeping deployments alive on Render, Railway, Koyeb, and Heroku
+Markdown rendering, theming, tables, and everything else in this README works with **no additional dependencies** — StayPresent ships its own built-in Markdown-to-HTML renderer.
 
 ---
 
-**License:** MIT License
+## 💡 Use Cases
 
-*Made with ❤️ using Python.*
+* Keeping a Discord/Telegram/Slack bot alive on a free-tier host that requires an open HTTP port.
+* Running several bots (e.g. a Telegram bot *and* a Discord bot) from a single deployed service.
+* Exposing a lightweight status page, uptime dashboard, or `CHANGELOG.md`/`README.md` viewer for a background worker.
+* Giving a hosting platform's health-check probe something to hit while your real work happens in a separate process.

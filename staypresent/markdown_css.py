@@ -4,22 +4,14 @@ CSS stylesheet used to style StayPresent's Markdown-rendered HTML output.
 
 STAYPRESENT_MARKDOWN_CSS = r'''
 /*
- *
  * A close approximation of GitHub's own ".markdown-body" stylesheet,
- * for use with staypresent's built-in Markdown renderer
- * (staypresent.markdown_renderer.render). Supports both light and dark modes
- * automatically via prefers-color-scheme.
- *
- * Usage:
- *   <link rel="stylesheet" href="github-markdown.css">
- *   <article class="markdown-body">
- *     ...rendered HTML from staypresent.markdown_renderer.render()...
- *   </article>
+ * optimized for staypresent with modern CSS features, smooth transitions,
+ * and enhanced accessibility.
  */
 
 .markdown-body {
   --color-canvas-default: #ffffff;
-  --color-canvas-subtle: #f6f8fa;
+  --color-canvas-subtle: #F5F8FC;
   --color-fg-default: #1f2328;
   --color-fg-muted: #59636e;
   --color-fg-subtle: #6e7781;
@@ -45,12 +37,15 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   max-width: 980px;
   margin: 0 auto;
   padding: 32px;
+  
+  /* Smooth transition when switching themes */
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 @media (prefers-color-scheme: dark) {
-  .markdown-body {
-    --color-canvas-default: #0d1117;
-    --color-canvas-subtle: #161b22;
+  .markdown-body:not([data-theme="light"]) {
+    --color-canvas-default: #121212;
+    --color-canvas-subtle: #292929;
     --color-fg-default: #e6edf3;
     --color-fg-muted: #848d97;
     --color-fg-subtle: #6e7681;
@@ -71,7 +66,7 @@ STAYPRESENT_MARKDOWN_CSS = r'''
 .markdown-body[data-theme="light"] {
   color-scheme: light;
   --color-canvas-default: #ffffff;
-  --color-canvas-subtle: #f6f8fa;
+  --color-canvas-subtle: #F5F8FC;
   --color-fg-default: #1f2328;
   --color-fg-muted: #59636e;
   --color-fg-subtle: #6e7781;
@@ -90,8 +85,8 @@ STAYPRESENT_MARKDOWN_CSS = r'''
 
 .markdown-body[data-theme="dark"] {
   color-scheme: dark;
-  --color-canvas-default: #0d1117;
-  --color-canvas-subtle: #161b22;
+  --color-canvas-default: #121212;
+  --color-canvas-subtle: #292929;
   --color-fg-default: #e6edf3;
   --color-fg-muted: #848d97;
   --color-fg-subtle: #6e7681;
@@ -114,15 +109,14 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   }
 }
 
-.markdown-body::before {
+.markdown-body::before,
+.markdown-body::after {
   display: table;
   content: "";
 }
 
 .markdown-body::after {
-  display: table;
   clear: both;
-  content: "";
 }
 
 /* ---- Headings ---- */
@@ -151,21 +145,12 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   border-bottom: 1px solid var(--color-border-muted);
 }
 
-.markdown-body h3 {
-  font-size: 1.25em;
-}
-
-.markdown-body h4 {
-  font-size: 1em;
-}
-
-.markdown-body h5 {
-  font-size: 0.875em;
-}
-
-.markdown-body h6 {
-  font-size: 0.85em;
-  color: var(--color-fg-muted);
+.markdown-body h3 { font-size: 1.25em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5 { font-size: 0.875em; }
+.markdown-body h6 { 
+  font-size: 0.85em; 
+  color: var(--color-fg-muted); 
 }
 
 .markdown-body h1[align="center"],
@@ -175,8 +160,6 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   padding-bottom: 0;
 }
 
-/* Anchor-link icon next to headings that have an id (like GitHub's own
-   "#" hover link) - purely decorative, shows on hover only. */
 .markdown-body h1[id]:hover .anchor,
 .markdown-body h2[id]:hover .anchor,
 .markdown-body h3[id]:hover .anchor,
@@ -233,12 +216,7 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   margin-top: 0.25em;
 }
 
-.markdown-body dl {
-  padding: 0;
-}
-
 .markdown-body dl dt {
-  padding: 0;
   margin-top: 16px;
   font-size: 1em;
   font-style: italic;
@@ -250,7 +228,7 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   margin-bottom: 16px;
 }
 
-/* ---- Links ---- */
+/* ---- Links & Accessibility Enhancements ---- */
 
 .markdown-body a {
   color: var(--color-accent-fg);
@@ -267,19 +245,19 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   text-decoration: none;
 }
 
+/* Focus ring for accessibility */
+.markdown-body a:focus-visible,
+.markdown-body button:focus-visible {
+  outline: 2px solid var(--color-accent-fg);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* ---- Emphasis ---- */
 
-.markdown-body strong {
-  font-weight: 600;
-}
-
-.markdown-body em {
-  font-style: italic;
-}
-
-.markdown-body del {
-  text-decoration: line-through;
-}
+.markdown-body strong { font-weight: 600; }
+.markdown-body em { font-style: italic; }
+.markdown-body del { text-decoration: line-through; }
 
 /* ---- Images ---- */
 
@@ -309,17 +287,9 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   border-left: 0.25em solid var(--color-border-default);
 }
 
-.markdown-body blockquote > :first-child {
-  margin-top: 0;
-}
-
-.markdown-body blockquote > :last-child {
-  margin-bottom: 0;
-}
-
-.markdown-body blockquote > blockquote {
-  margin-top: 16px;
-}
+.markdown-body blockquote > :first-child { margin-top: 0; }
+.markdown-body blockquote > :last-child { margin-bottom: 0; }
+.markdown-body blockquote > blockquote { margin-top: 16px; }
 
 /* ---- Tables ---- */
 
@@ -342,12 +312,12 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   border: 1px solid var(--color-border-default);
 }
 
-.markdown-body table thead tr {
+.markdown-body table thead tr,
+.markdown-body table tr {
   background-color: var(--color-canvas-default);
 }
 
 .markdown-body table tr {
-  background-color: var(--color-canvas-default);
   border-top: 1px solid var(--color-border-muted);
 }
 
@@ -381,6 +351,20 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   color: var(--color-fg-default);
   background-color: var(--color-canvas-subtle);
   border-radius: 6px;
+  
+  /* Custom thin scrollbar for modern code blocks */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-default) transparent;
+}
+
+.markdown-body pre::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+.markdown-body pre::-webkit-scrollbar-thumb {
+  background-color: var(--color-border-default);
+  border-radius: 3px;
 }
 
 .markdown-body pre code,
@@ -398,10 +382,6 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   white-space: pre;
 }
 
-/* Minimal, generic syntax-highlight-ish accents for the
-   `class="language-xxx"` hook staypresent's renderer adds to fenced code
-   blocks. Not real tokenization - just a restrained set of GitHub-ish
-   accent colors so code doesn't look completely flat. */
 .markdown-body pre code.language-diff .line,
 .markdown-body pre code[class*="language-"] {
   color: inherit;
@@ -443,5 +423,4 @@ STAYPRESENT_MARKDOWN_CSS = r'''
 .markdown-body p[align="center"] img {
   margin: 0 2px;
 }
-
 '''

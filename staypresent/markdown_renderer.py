@@ -162,7 +162,7 @@ class MarkdownRenderer:
                     out.append(self._render_heading(1, line.strip()))
                     i += 2
                     continue
-                if _SETEXT_H2_RE.match(lines[i + 1]) and lines[i + 1].strip("- \t"):
+                if _SETEXT_H2_RE.match(lines[i + 1]):
                     out.append(self._render_heading(2, line.strip()))
                     i += 2
                     continue

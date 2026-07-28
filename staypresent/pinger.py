@@ -53,7 +53,29 @@ def _build_url(host: str, port: int = None, path: str = "/", https: bool = None)
 
 
 def ping(host: str, port: int = None, path: str = "/", timeout: float = 10.0, https: bool = None) -> dict:
-    
+    """
+    Send a single HTTP GET request to `host` (a bare host/IP, "host:port",
+    or a full URL) and report the result.
+
+    Args:
+        host: Hostname/IP, or a full URL (in which case `port`/`path`/
+            `https` are ignored). "0.0.0.0"/"::" are treated as "this
+            machine" (127.0.0.1), since they're bind addresses, not
+            something you can send an outgoing request to.
+        port: Port to connect to. Ignored if `host` is a full URL.
+        path: URL path to request. Ignored if `host` is a full URL.
+        timeout: Seconds to wait for a response before giving up.
+        https: Force https (True) or http (False). If omitted, defaults to
+            https for anything that isn't a local address, and http for
+            "127.0.0.1"/"localhost"/"::1" (matching what `staypresent.run()`
+            itself serves).
+
+    Returns:
+        A dict: {"url", "ok", "status_code", "elapsed", "error"}. `ok` is
+        True for any 2xx/3xx response. `error` holds a short description on
+        failure (HTTP error status, timeout, DNS failure, connection
+        refused, etc.), else None.
+    """
     if timeout <= 0:
         raise ValueError(f"staypresent.ping(): timeout must be > 0, got {timeout}.")
 
@@ -115,7 +137,28 @@ def cron(
     on_success=None,
     on_failure=None,
 ) -> CronHandle:
-    
+    """
+    Start a background thread that repeatedly pings a URL - useful for
+    keeping a free-tier host "warm" (preventing it from spinning your
+    service down due to inactivity).
+
+    Args:
+        host, port, path, https: Same as `ping()` - describe the URL to hit.
+        interval: Seconds to wait between pings.
+        repeat: If True (default), keep pinging forever (until `.stop()` is
+            called). If False, ping exactly once and stop.
+        timeout: Per-request timeout in seconds, same as `ping()`.
+        on_success: Optional callback `fn(result)` called after each
+            successful ping (`result` is the same dict `ping()` returns).
+            An exception raised by the callback is logged and swallowed -
+            it will not stop the cron loop.
+        on_failure: Optional callback `fn(result)` called after each failed
+            ping. Same exception-safety as `on_success`.
+
+    Returns:
+        A `CronHandle` you can use to stop the background pinger later via
+        `handle.stop()`, or check `handle.is_running`.
+    """
     if interval <= 0:
         raise ValueError(f"staypresent.cron(): interval must be > 0, got {interval}.")
     if timeout <= 0:
