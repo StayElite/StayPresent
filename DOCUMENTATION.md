@@ -246,6 +246,12 @@ staypresent.web.remove("/bot2")  # -> True (was registered) / False (wasn't)
 
 ```
 
+**Registering the same path more than once:**
+
+`text()`/`json()`/`html()`/`markdown()` always overwrite whatever was previously registered at their `path` — there's no error or refusal for reusing a path, since re-registering the *same* path is exactly how you update a live response (e.g. calling `json()` again with a fresh payload to refresh a status endpoint). That case stays completely silent.
+
+What StayPresent does watch for is the response *type* at a path changing — e.g. a path held a `"json"` response and a later call registers `"text"` there instead. That's a much stronger signal that two different call sites (two different bots, or two unrelated parts of the same script) didn't realize they were both claiming the same path, and only the most recent one will ever be served. In that case, a `WARNING`-level log line is emitted through the `"staypresent"` logger (see [Section 9](#9-logging)) naming the path and both response types involved, so the collision is visible instead of silently serving the wrong thing. Nothing is blocked either way — the newest registration always wins — this only affects what gets logged.
+
 ### 3.6 State Inspection
 
 To retrieve the currently configured response payload for debugging or testing:
@@ -257,6 +263,7 @@ current_state = staypresent.web.get()
 ```
 
 `get()` defaults to `path="/"`; pass a different `path` to inspect any other registered route. For a Markdown entry, the returned dict also includes `mode`, `favicon`, `title`, and `description` keys.
+
 
 ---
 
@@ -309,6 +316,9 @@ With multiple bots:
 * Each bot gets its own restart counter and is monitored on its own thread — a crash (and subsequent restart) in one bot has no effect on the others.
 * `staypresent.run()` waits for every bot to finish (or fail permanently) before returning or exiting the process.
 * `Ctrl+C`/`SIGTERM` terminates the web server and *all* bot processes.
+* Bots are tracked internally by their position in the list/`bots` array, not by filename — two bots can share the exact same filename (e.g. `shard_a/bot.py` and `shard_b/bot.py`) with no functional conflict whatsoever; each still gets its own process, its own restart counter, and its own independent supervision.
+
+**Log labels for bots with the same filename:** every log line about a bot (crash, restart, giving up) identifies it with a label like `bot[0] 'worker.py'`. Normally that's just the filename. But if two or more bots in the same `run()` call share a filename, using just the filename there would make otherwise-distinct bots indistinguishable in the logs — two lines both reading `bot[0] 'bot.py' crashed` / `bot[1] 'bot.py' crashed` force you to cross-reference your own list order to know which is which. StayPresent detects this automatically: whenever a filename collides with another bot's in the same run, every bot sharing that filename is labeled with its full file path instead (e.g. `bot[0] 'shard_a/bot.py'` / `bot[1] 'shard_b/bot.py'`), so the logs stay unambiguous. Bots with a filename that doesn't collide with anything keep the shorter, plain filename label.
 
 ### Execution Parameters
 
@@ -534,6 +544,18 @@ staypresent.run(["telegram_bot.py", "discord_bot.py"])
 ```
 
 Each bot is supervised (and restarted on crash) independently. For per-bot arguments or environment variables, use the `bots` parameter instead — see [Section 4.1](#41-running-multiple-bots).
+
+---
+
+### What happens if two of my bot files have the same filename?
+
+Nothing breaks. Bots are tracked by their position in the list, not by filename, so `staypresent.run(["shard_a/bot.py", "shard_b/bot.py"])` runs both as fully independent processes with independent crash recovery. The only thing that changes is cosmetic: StayPresent detects the shared filename and automatically shows each bot's full path in the logs instead of just the filename, so crash/restart messages stay unambiguous. See [Section 4.1](#41-running-multiple-bots).
+
+---
+
+### What happens if I register two responses at the same path?
+
+The most recently registered one wins — this is also how you intentionally update a response (e.g. calling `json()` again to refresh a status payload), so it never raises an error. If the response *type* at that path actually changes (e.g. it was `json` and a later call registers `text` there), StayPresent logs a `WARNING` so you can spot an unintended collision between two bots or two parts of your code. See [Section 3.5](#35-custom-paths--multiple-responses).
 
 ---
 

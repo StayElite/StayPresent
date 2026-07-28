@@ -93,9 +93,36 @@ def _run_server(
         started_event.set()
 
 
-def _bot_label(index: int, file_path: str, total: int) -> str:
-    name = os.path.basename(file_path)
-    return f"bot '{name}'" if total == 1 else f"bot[{index}] '{name}'"
+def _build_bot_labels(bot_configs: list) -> list:
+    """
+    Build a display label for every bot in bot_configs, used consistently
+    in every log line about that bot (startup failures, crashes, restarts,
+    giving up).
+
+    Normally this is just the bot's filename, e.g. "bot 'worker.py'" (or
+    "bot[i] 'worker.py'" when there's more than one bot). But when two or
+    more bots in the same run share the same filename - e.g.
+    "shard_a/bot.py" and "shard_b/bot.py" both launched via
+    `staypresent.run(["shard_a/bot.py", "shard_b/bot.py"])` - using just the
+    filename for those would make otherwise-distinct bots indistinguishable
+    in the logs (e.g. two lines both reading "bot[0] 'bot.py' crashed" /
+    "bot[1] 'bot.py' crashed", forcing you to cross-reference your own list
+    order to know which is which). Whenever a filename collides with
+    another bot's, every bot sharing that filename is labeled with its full
+    file path instead, so log lines stay unambiguous without changing
+    anything for bots that don't collide with anything.
+    """
+    total = len(bot_configs)
+    basenames = [os.path.basename(cfg["file"]) for cfg in bot_configs]
+    name_counts = {}
+    for name in basenames:
+        name_counts[name] = name_counts.get(name, 0) + 1
+
+    labels = []
+    for i, cfg in enumerate(bot_configs):
+        display = cfg["file"] if name_counts[basenames[i]] > 1 else basenames[i]
+        labels.append(f"bot '{display}'" if total == 1 else f"bot[{i}] '{display}'")
+    return labels
 
 
 def _normalize_bot_configs(bot_file, bot_args, env, bots):
@@ -330,6 +357,7 @@ def run(
         logger.info("Web server running on %s:%s", host, port)
 
     total_bots = len(bot_configs)
+    bot_labels = _build_bot_labels(bot_configs)
 
     def _bot_cmd(cfg):
         return [sys.executable, cfg["file"]] + cfg["args"]
@@ -404,7 +432,7 @@ def run(
         try:
             initial_processes[i] = subprocess.Popen(_bot_cmd(cfg), env=_bot_env(cfg))
         except OSError as exc:
-            label = _bot_label(i, cfg["file"], total_bots)
+            label = bot_labels[i]
             logger.error("Failed to launch %s: %s", label, exc)
             for started in initial_processes.values():
                 started.terminate()
@@ -414,7 +442,7 @@ def run(
         proc_holder[i] = initial_processes[i]
 
     def _manage_bot(index, cfg, process):
-        label = _bot_label(index, cfg["file"], total_bots)
+        label = bot_labels[index]
         process_started_at = time.monotonic()
         restarts = 0
 
@@ -496,9 +524,7 @@ def run(
         return
 
     if failures:
-        failed_labels = ", ".join(
-            _bot_label(i, bot_configs[i]["file"], total_bots) for i in sorted(failures)
-        )
+        failed_labels = ", ".join(bot_labels[i] for i in sorted(failures))
         logger.error(
             "%d of %d bot process(es) failed to stay up: %s",
             len(failures), total_bots, failed_labels,

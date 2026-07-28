@@ -222,6 +222,8 @@ staypresent.web.remove("/bot2")         # stop hosting a response, returns True/
 
 > **Note on `/health`:** StayPresent has a built-in default at `/health` returning `{"status": "ok"}` (see [Built-in Health Check](#built-in-health-check) below). It's a default, not a reservation — if you register your own response at `/health` via `staypresent.web`, yours is served instead.
 
+> **Note on registering the same path twice:** calling `text()`/`json()`/`html()`/`markdown()` again for a path you've already registered is a normal way to update it (e.g. calling `json()` repeatedly to refresh a status payload) — the newest call always wins, silently. But if the response *type* at a path changes (e.g. it was `json` and a later call registers `text` there instead), that's usually a sign two different bots — or two different parts of your code — didn't realize they were both claiming the same path, so StayPresent logs a one-line warning to make that visible instead of just quietly serving whichever one happened to run last.
+
 ---
 
 ## 🤖 Running Multiple Bots
@@ -259,6 +261,8 @@ staypresent.run(bots=[
 ```
 
 `bots` is mutually exclusive with `bot_file`/`bot_args`/`env` — pick whichever style fits: `bot_file` (+ optional shared `bot_args`/`env`) for the simple case, `bots` when each process needs its own arguments or environment.
+
+> **Note on bots with the same filename:** if two bot files share a filename (e.g. `shard_a/bot.py` and `shard_b/bot.py`), they run as fully independent processes with no conflict — StayPresent tracks each by its position in the list, not its name. The only thing that changes is the log labels: instead of two ambiguous `bot[0] 'bot.py'`/`bot[1] 'bot.py'` lines, StayPresent automatically switches to showing each one's full path (e.g. `bot[0] 'shard_a/bot.py'`) whenever a filename collision is detected, so crash/restart logs always tell them apart.
 
 ### How failures are handled with multiple bots
 

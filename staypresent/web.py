@@ -1,8 +1,11 @@
 import copy
+import logging
 import os
 import re
 import threading
 from typing import Any
+
+logger = logging.getLogger("staypresent")
 
 _lock = threading.Lock()
 
@@ -55,6 +58,30 @@ def _normalize_path(path: str) -> str:
     return normalized
 
 
+def _warn_if_overwriting(path: str, previous: dict, new_type: str) -> None:
+    """
+    Calling text()/json()/html()/markdown() again for a path you've already
+    registered (e.g. to update a JSON status payload) is a normal, expected
+    pattern - so this never raises or blocks the overwrite. But if two
+    different call sites end up registering *different kinds* of responses
+    at the same path (most often a sign that two bots, or two unrelated
+    parts of the same script, didn't realize they were both claiming "/"
+    or the same custom path), only the most recent one is ever served, and
+    that's easy to miss silently. This logs a one-line warning whenever the
+    response *type* at a path actually changes, so the collision shows up
+    in your logs instead of just quietly serving the wrong thing.
+    """
+    if not previous or previous.get("type") == new_type:
+        return
+    logger.warning(
+        "staypresent.web: path '%s' already had a '%s' response registered - it's now "
+        "replaced with a '%s' response. If this wasn't intentional, check whether two "
+        "different bots (or two different parts of your code) are both registering a "
+        "response at '%s'.",
+        path, previous.get("type"), new_type, path,
+    )
+
+
 def text(message: str, path: str = "/") -> None:
     """
     Set a plain-text response for the web server to return at `path`.
@@ -68,7 +95,9 @@ def text(message: str, path: str = "/") -> None:
     """
     p = _normalize_path(path)
     with _lock:
+        previous = _routes.get(p)
         _routes[p] = {"type": "text", "value": str(message)}
+    _warn_if_overwriting(p, previous, "text")
 
 
 def json(data: Any, path: str = "/") -> None:
@@ -88,7 +117,9 @@ def json(data: Any, path: str = "/") -> None:
     """
     p = _normalize_path(path)
     with _lock:
+        previous = _routes.get(p)
         _routes[p] = {"type": "json", "value": copy.deepcopy(data)}
+    _warn_if_overwriting(p, previous, "json")
 
 
 def html(file_path: str, path: str = "/") -> None:
@@ -123,7 +154,9 @@ def html(file_path: str, path: str = "/") -> None:
 
     p = _normalize_path(path)
     with _lock:
+        previous = _routes.get(p)
         _routes[p] = {"type": "html", "value": os.path.abspath(file_path)}
+    _warn_if_overwriting(p, previous, "html")
 
 
 _VALID_MARKDOWN_MODES = ("light", "dark", "auto")
@@ -211,6 +244,7 @@ def markdown(
 
     p = _normalize_path(path)
     with _lock:
+        previous = _routes.get(p)
         _routes[p] = {
             "type": "markdown",
             "value": os.path.abspath(file_path),
@@ -219,6 +253,7 @@ def markdown(
             "title": title,
             "description": description,
         }
+    _warn_if_overwriting(p, previous, "markdown")
 
 
 def remove(path: str = "/") -> bool:
