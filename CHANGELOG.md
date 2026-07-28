@@ -1,5 +1,92 @@
 # Changelog
 
+## 1.5.8
+
+### Fixed
+
+- **Markdown renderer: nested inline elements inside link text leaked raw
+  placeholder tokens.** Code spans, escapes, and images are stashed as
+  opaque placeholder tokens before links are processed; when one of those
+  ended up inside a link's label, the link's own stashed value contained
+  that nested token, but restoration only did a single forward pass
+  (lowest index first), so a low-index token trapped inside a
+  higher-index link's stash never got resolved. `[`code`](url)` rendered
+  as `<a href="url">\x000\x00</a>`, and the very common "clickable
+  badge/logo" pattern `[![alt](img.png)](url)` — found in countless
+  READMEs — was affected the same way. Fixed by restoring placeholders in
+  reverse (highest-index-first) order, since a stash can only ever embed
+  a *lower*-index placeholder, so processing highest-index-first
+  guarantees any nested token is exposed before its own turn comes up.
+- **Markdown renderer: emphasis/bold/strikethrough inside link text was
+  silently dropped.** `[**bold link**](url)` rendered the literal
+  asterisks instead of `<strong>`, because a link's label gets embedded
+  in its stashed `<a>...</a>` HTML *before* the main text's
+  emphasis-processing step ever runs over it. Fixed by running
+  emphasis/bold/strikethrough substitution directly over the label
+  before it's embedded in the anchor tag.
+- **`active_cron_handles()` lost "fire-and-forget" cron jobs almost
+  immediately.** The cron registry tracked `CronHandle`s with a
+  `weakref.WeakSet`, so if the caller didn't keep a strong reference to
+  the handle returned by `cron()` — completely normal for a keep-warm
+  pinger nobody intends to `.stop()` — the handle was garbage-collected
+  right after `cron()` returned, and the job vanished from introspection
+  even though its background thread kept running. Fixed by tracking
+  handles with a plain set of strong references instead, removing an
+  entry when `.stop()` is called and lazily pruning any whose thread has
+  since exited whenever the registry is read.
+- **Dead code in `pinger.py`.** `_ANY_HOSTS` included `""` as an
+  "any host" alias, but `_build_url()` already raises `ValueError` for an
+  empty/whitespace-only host earlier in the same function, so that
+  branch could never be reached. Removed.
+- **`staypresent.web.json()` didn't validate JSON-serializability until
+  the first request.** A non-serializable payload only surfaced as a 500
+  on the first incoming request, unlike every other `staypresent.web`/
+  `staypresent.run()` argument, which all fail fast at call time.
+  `json()` now attempts to serialize `data` immediately and raises
+  `TypeError` right away if it can't.
+- **`staypresent.web.markdown(favicon=...)` wasn't checked for existence
+  up front.** Unlike `file_path`, a typo'd local `favicon` path silently
+  404'd only once a browser actually requested it. A local (non-URL)
+  `favicon` is now checked for existence at call time, the same way
+  `file_path` already is, and raises `FileNotFoundError` immediately if
+  missing.
+- **`staypresent.run()` replaced any signal handler the host script had
+  already installed, with no chaining.** Calling `signal.signal(SIGINT/
+  SIGTERM, shutdown)` unconditionally discarded whatever handler the
+  caller had set up before calling `run()`. `run()` now chains to any
+  previously-installed handler — calling it after StayPresent's own
+  cleanup completes — and accepts a new `install_signal_handlers=False`
+  option to skip installing its own handlers entirely.
+- **Calling `staypresent.run()` twice in one process failed with a
+  generic, unhelpful error.** Because `run()` uses a single shared,
+  module-level Flask app, a second call just tried to bind the same
+  host:port again and failed with a bare "address already in use"
+  `OSError`. `run()` now raises a specific `RuntimeError` up front if
+  it's called more than once in the same process, explaining why and
+  pointing at passing multiple bots to a single call instead.
+
+### Documentation
+
+- **New, prominent security callout for `staypresent.web.html()`/
+  `staypresent.web.markdown()`:** registering a file at a path serves
+  *every* file in that file's directory as a static-asset fallback — not
+  just files actually referenced from the page. This was already
+  documented in passing as "neighboring assets are served", but the
+  scope (whole directory, not an allowlist of referenced files) was easy
+  to miss; a `.env`, bot source file, or `.git/` sitting next to a served
+  file would be downloadable by anyone who guesses the filename. Both
+  docstrings and `README.md`/`DOCUMENTATION.md` now call this out
+  explicitly, and `html()`/`markdown()` log a one-time warning per
+  directory the first time it's exposed this way. This remains "working
+  as designed" for this release — an opt-in allowlist is being
+  considered for a future version.
+- Documented the new `install_signal_handlers` parameter on
+  `staypresent.run()`, the fail-fast behavior of `staypresent.web.json()`
+  and `staypresent.web.markdown(favicon=...)`, and the specific error now
+  raised when `run()` is called more than once.
+
+---
+
 ## 1.5.7
 
 ### Fixed

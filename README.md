@@ -127,6 +127,8 @@ staypresent.run("bot.py")
 
 ```
 
+> `data` must be JSON-serializable — this is checked immediately, so a bad payload (e.g. containing a non-serializable object) raises `TypeError` right away at the `json()` call, not as a 500 error on the first request that hits it.
+
 ### HTML Response
 
 Serve a full HTML file. Any CSS/JS/images referenced next to it are served automatically.
@@ -138,6 +140,8 @@ staypresent.web.html("template/index.html")
 staypresent.run("bot.py")
 
 ```
+
+> ⚠️ **Security note — this serves the whole directory, not just referenced files.** Registering `template/index.html` makes *every* file inside `template/` servable to anyone who requests it by name — not only the CSS/JS/images actually linked from `index.html`. If a `.env`, a bot source file, or a `.git/` directory sits in that same folder, it becomes downloadable too. Keep the file you pass to `html()`/`markdown()` in a directory containing only files you're happy to have publicly served. StayPresent logs a one-time warning per directory the first time this happens, as a reminder.
 
 ### Markdown Response
 
@@ -171,7 +175,7 @@ staypresent.run("bot.py")
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `mode` | `"auto"` | `"auto"` follows the visitor's OS/browser color-scheme preference automatically. `"light"`/`"dark"` force that scheme for every visitor regardless of their own setting. |
-| `favicon` | `None` | A direct URL (`http://`, `https://`, or `//...`) is used as-is. Anything else (e.g. `"favicon.png"`) is treated as a file next to your Markdown file — the same way neighboring CSS/images already are — and must exist there to be served correctly. |
+| `favicon` | `None` | A direct URL (`http://`, `https://`, or `//...`) is used as-is. Anything else (e.g. `"favicon.png"`) is treated as a file next to your Markdown file — the same way neighboring CSS/images already are. A local (non-URL) favicon's existence is checked immediately: `markdown()` raises `FileNotFoundError` right away if it's missing, instead of silently 404ing only once a browser requests it. |
 | `title` | `None` | Sets the page `<title>` and Open Graph title. Defaults to the Markdown file's own filename when omitted. |
 | `description` | `None` | Adds a `<meta name="description">` tag and an Open Graph description tag — useful for link-preview cards when the URL is shared on social media/chat apps. |
 
@@ -383,8 +387,11 @@ Launch your bot script(s) alongside the web server.
 | `bot_args` | `list` | `None` | Extra command-line arguments passed to every bot in `bot_file`/`bot_module` (e.g., `["--verbose"]`). Must be a list — a bare string like `"--flag"` raises a clear error instead of silently exploding into individual characters. Ignored when `bots` is used. |
 | `env` | `dict` | `None` | Extra environment variables for every bot in `bot_file`/`bot_module`. Merges over the current environment. Ignored when `bots` is used. |
 | `bots` | `list[dict]` | `None` | Per-bot configuration: `[{"file": "bot.py", ...}, {"module": "mypkg.bot", ...}, ...]` — each entry needs exactly one of `"file"`/`"module"`, plus optional `"args"`/`"env"`. Mutually exclusive with `bot_file`/`bot_module`/`bot_args`/`env` — see [Running Multiple Bots](#-running-multiple-bots). |
+| `install_signal_handlers` | `bool` | `True` | Install StayPresent's own `SIGINT`/`SIGTERM` handlers for graceful shutdown. Any handler your script already installed for those signals *before* calling `run()` is chained — called after StayPresent's own cleanup — instead of being silently replaced. Set to `False` to skip installing StayPresent's handlers entirely and manage shutdown signaling yourself. |
 
 > **Note:** `port`, `threads`, `max_restarts`, `restart_delay`, and `restart_reset_after` are validated up front — passing an invalid value (e.g. `threads=0`, a negative `port`) raises a `ValueError` immediately instead of failing silently or deep inside `waitress`. Likewise, every bot file (in `bot_file` or `bots`) is checked to exist *before* the server starts.
+
+> **Note on calling `run()` twice:** `staypresent.run()` uses a single, shared, module-level web server, so it's only meant to be called once per process. Calling it a second time raises a clear `RuntimeError` explaining why, instead of the generic "address already in use" `OSError` you'd otherwise get from trying to bind the same host:port twice. To run multiple bots, pass them all to *one* `run()` call — see [Running Multiple Bots](#-running-multiple-bots).
 
 ### Crash Recovery Details
 
@@ -392,7 +399,7 @@ StayPresent automatically monitors every bot process. If one exits with a non-ze
 
 * **Clean Exits:** An exit code of `0` is considered intentional and will *not* trigger a restart.
 * **Independent Supervision:** With multiple bots, each one is monitored and restarted completely independently — one crashing (or exhausting its restarts) doesn't pause or stop the others.
-* **Manual Shutdowns:** Stopping StayPresent via `Ctrl+C` (SIGINT) or `SIGTERM` shuts down the server and *every* bot process cleanly.
+* **Manual Shutdowns:** Stopping StayPresent via `Ctrl+C` (SIGINT) or `SIGTERM` shuts down the server and *every* bot process cleanly. If your own script already installed a `SIGINT`/`SIGTERM` handler before calling `run()`, StayPresent calls it too, after its own cleanup finishes — it isn't silently discarded. Pass `install_signal_handlers=False` if you'd rather StayPresent not install its own handlers at all.
 * **Smart Counters:** The `max_restarts` limit applies to *consecutive* crashes, per bot. If a bot runs successfully for the duration of `restart_reset_after` (default 60 seconds), its crash counter resets.
 * **Non-Zero Exit on Giving Up:** `staypresent.run()` waits for every bot to finish. If any bot ultimately failed to stay up — restarts disabled and it crashed, or `max_restarts` was exhausted for it — `staypresent.run()` then exits the whole process with a non-zero exit code instead of returning normally. This lets a hosting platform's own restart-on-crash policy (Render, Railway, Docker, systemd, etc.) kick in as a last resort, instead of the process quietly exiting `0` as if nothing went wrong.
 

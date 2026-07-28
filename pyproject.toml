@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "staypresent"
-version = "1.5.7"
+version = "1.5.8"
 description = "Keep your Python bots alive with a zero-config, production-ready background web server."
 readme = "README.md"
 license = { text = "MIT" }

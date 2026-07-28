@@ -3,21 +3,41 @@ import threading
 import time
 import urllib.error
 import urllib.request
-import weakref
 
 logger = logging.getLogger("staypresent")
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-_ANY_HOSTS = {"0.0.0.0", "::", ""}
+# "0.0.0.0"/"::" are bind addresses, not something you can send an outgoing
+# request to - treated as "this machine" below. (An empty-string host is
+# NOT included here: _build_url() already raises ValueError for an
+# empty/whitespace-only host before this set is ever consulted, so an ""
+# entry here would be unreachable dead code.)
+_ANY_HOSTS = {"0.0.0.0", "::"}
 
-# Every CronHandle ever returned by cron(), tracked weakly so this registry
-# never keeps a handle (or its thread) alive on its own. cron() threads are
-# daemon threads not otherwise registered with staypresent.run()'s own
-# shutdown() handler - harmless in practice (daemon threads die with the
-# process on sys.exit()), but it means there was previously no way to see,
-# from run()'s shutdown sequence, which cron jobs were still ticking at
-# shutdown time. active_cron_handles() below closes that gap.
-_cron_registry = weakref.WeakSet()
+# Every CronHandle ever returned by cron(), tracked with a *strong*
+# reference so this registry keeps working for the common "fire-and-forget"
+# pattern - e.g. `pinger.cron(...)` called without keeping the returned
+# handle around, which is a completely normal way to use a keep-warm
+# pinger nobody intends to ever `.stop()`. (An earlier version of this used
+# a weakref.WeakSet so the registry wouldn't keep the handle's *thread*
+# alive artificially - but a plain CronHandle object holds no thread alive
+# by existing; its background thread is already a daemon thread that dies
+# with the process regardless of whether anything still references the
+# handle. Using a WeakSet there meant the handle got garbage-collected
+# right after cron() returned whenever the caller discarded the return
+# value, making the job vanish from introspection even though its thread
+# kept running.) Dead entries (thread no longer alive) are pruned lazily
+# whenever the registry is read or a handle is stopped, so this doesn't
+# grow unbounded over a long-running process either.
+_cron_registry = set()
+_cron_registry_lock = threading.Lock()
+
+
+def _prune_cron_registry():
+    with _cron_registry_lock:
+        dead = [h for h in _cron_registry if not h._thread.is_alive()]
+        for h in dead:
+            _cron_registry.discard(h)
 
 
 def _build_url(host: str, port: int = None, path: str = "/", https: bool = None) -> str:
@@ -130,6 +150,8 @@ class CronHandle:
         self._stop_event.set()
         if wait:
             self._thread.join(timeout=timeout)
+        with _cron_registry_lock:
+            _cron_registry.discard(self)
 
     @property
     def is_running(self) -> bool:
@@ -209,7 +231,8 @@ def cron(
     thread.start()
 
     handle = CronHandle(thread, stop_event, url)
-    _cron_registry.add(handle)
+    with _cron_registry_lock:
+        _cron_registry.add(handle)
     return handle
 
 
@@ -224,4 +247,7 @@ def active_cron_handles() -> list:
     `staypresent.run()`'s own shutdown sequence uses this to log any cron
     pinger(s) still ticking when the process is asked to stop.
     """
-    return [h for h in list(_cron_registry) if h.is_running]
+    _prune_cron_registry()
+    with _cron_registry_lock:
+        handles = list(_cron_registry)
+    return [h for h in handles if h.is_running]

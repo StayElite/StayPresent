@@ -408,6 +408,16 @@ class MarkdownRenderer:
         self._placeholders.append(rendered_html)
         return key
 
+    @staticmethod
+    def _apply_emphasis(text):
+        """Run bold/italic/strikethrough substitution over a fragment of text."""
+        text = _BOLD_ITALIC_RE.sub(r'<strong><em>\2</em></strong>', text)
+        text = _BOLD_RE.sub(r'<strong>\2</strong>', text)
+        text = _ITALIC_STAR_RE.sub(r'<em>\1</em>', text)
+        text = _ITALIC_UNDER_RE.sub(r'<em>\1</em>', text)
+        text = _STRIKE_RE.sub(r'<del>\1</del>', text)
+        return text
+
     def _render_inline(self, text):
         text = text.strip()
         self._placeholders = []
@@ -447,8 +457,15 @@ class MarkdownRenderer:
             label, url, title = m.group(1), m.group(2), m.group(3)
             # Same reasoning as _image above: url/title are already
             # entity-escaped from step 3, so only quotes need handling here.
-            # `label` is left as-is - it's rendered as element content, not
-            # an attribute, so it's already correctly single-escaped.
+            # `label` is rendered as element content, not an attribute, so
+            # it's already correctly single-escaped - but it still needs to
+            # go through emphasis/bold/strikethrough processing itself: the
+            # main text's step 7 (below) never sees this label, since by
+            # the time step 7 runs, the whole `<a href="...">...</a>` this
+            # closure returns has already been stashed as a single opaque
+            # placeholder token. Without this, "[**bold link**](url)" would
+            # render literal "**" asterisks instead of <strong> markup.
+            label = self._apply_emphasis(label)
             title_attr = ' title="{}"'.format(self._escape_attr_quotes(title)) if title else ""
             return self._stash('<a href="{}"{}>{}</a>'.format(self._escape_attr_quotes(url), title_attr, label))
 
@@ -464,18 +481,26 @@ class MarkdownRenderer:
         text = _AUTOLINK_RE.sub(_autolink, text)
 
         # 7. emphasis / strikethrough
-        text = _BOLD_ITALIC_RE.sub(r'<strong><em>\2</em></strong>', text)
-        text = _BOLD_RE.sub(r'<strong>\2</strong>', text)
-        text = _ITALIC_STAR_RE.sub(r'<em>\1</em>', text)
-        text = _ITALIC_UNDER_RE.sub(r'<em>\1</em>', text)
-        text = _STRIKE_RE.sub(r'<del>\1</del>', text)
+        text = self._apply_emphasis(text)
 
         # 8. hard line breaks
         text = _HARDBREAK_RE.sub('<br>\n', text)
 
         # 9. restore protected fragments
-        for idx, val in enumerate(self._placeholders):
-            text = text.replace("\x00{}\x00".format(idx), val)
+        #
+        # Restore in reverse (highest index first), not forward order. A
+        # stash can only ever contain a *lower*-index placeholder nested
+        # inside it (it was created earlier in the pipeline - e.g. a code
+        # span's placeholder gets embedded inside a link's stashed
+        # `<a>...</a>` HTML when the code span is part of the link text).
+        # Restoring forward (0 -> N) means a low-index token trapped inside
+        # a higher-index link's stashed string never gets a chance to
+        # resolve, since its own turn already passed before the link
+        # unwraps it - the placeholder leaks straight into the page as raw
+        # "\x000\x00" text. Restoring highest-index-first guarantees any
+        # nested token is exposed in `text` before its own turn comes up.
+        for idx in range(len(self._placeholders) - 1, -1, -1):
+            text = text.replace("\x00{}\x00".format(idx), self._placeholders[idx])
 
         self._placeholders = None
         return text

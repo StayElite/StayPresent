@@ -122,6 +122,8 @@ staypresent.web.json({
 
 **Signature:** `staypresent.web.json(data: Any, path: str = "/") -> None`
 
+> **Note:** `data` is validated for JSON-serializability immediately, at call time — passing something that can't be serialized (e.g. a custom object with no JSON representation) raises `TypeError` right away, rather than only surfacing as a 500 error on the first incoming request.
+
 ### 3.3 HTML & Static Assets
 
 Reads and serves an HTML file on every request. This allows for dynamic, on-disk updates without restarting the Python process.
@@ -136,6 +138,8 @@ staypresent.web.html("templates/index.html")
 **Signature:** `staypresent.web.html(file_path: str, path: str = "/") -> None`
 
 > **Note:** Any static assets (CSS, JS, images) located in the same directory as the target HTML file are automatically served. Path traversal is strictly prohibited by internal security checks (`send_from_directory` refuses to serve anything that would escape the target directory).
+>
+> ⚠️ **Security — this covers the whole directory, not just referenced assets.** "Automatically served" means *every* file inside `file_path`'s directory becomes reachable to anyone who requests it by name, not only the specific CSS/JS/image files actually linked from the page. If a `.env`, a bot's own source file, or a `.git/` directory happens to sit in that same directory, it's downloadable the same way. This is intentional — it's what makes relative asset links work without extra configuration — but the scope is easy to miss, so keep `file_path` in a directory containing only files you're comfortable serving publicly. StayPresent logs a one-time `WARNING` per directory (see [Section 9](#9-logging)) the first time `html()`/`markdown()` exposes it, as a reminder. An opt-in allowlist restricting this to only referenced files is being considered for a future release.
 
 For any `path` other than the default `"/"`, a bare request to that path is redirected (HTTP 308) to a trailing-slash version — see [Section 3.5](#35-custom-paths--multiple-responses) for why this matters.
 
@@ -149,6 +153,8 @@ import staypresent
 staypresent.web.markdown("CHANGELOG.md")
 
 ```
+
+> ⚠️ **Security note:** `markdown()` serves neighboring static assets the exact same way `html()` does — see the callout in [Section 3.3](#33-html--static-assets). Everything in `file_path`'s directory becomes servable, not just files referenced from the rendered page.
 
 **Signature:**
 
@@ -169,7 +175,7 @@ staypresent.web.markdown(
 | `file_path` | `str` | **Required** | Path to the `.md` file to serve. Must exist at call time (checked immediately — raises `FileNotFoundError` otherwise). |
 | `path` | `str` | `"/"` | Route to host this page on. See [Section 3.5](#35-custom-paths--multiple-responses). |
 | `mode` | `str` | `"auto"` | Color scheme for the rendered page. One of `"light"`, `"dark"`, or `"auto"`. Case-insensitive and whitespace-tolerant (`" Dark "` is accepted); `None` is treated the same as the default, `"auto"`. Anything else raises `ValueError`. |
-| `favicon` | `str` or `None` | `None` | Adds a `<link rel="icon">` tag. A direct URL (`http://`, `https://`, or a protocol-relative `//...`) is used as-is. Any other value is treated as a relative path next to `file_path`, resolved the same way neighboring static assets already are. Must be a `str` or `None` — anything else raises `TypeError`. |
+| `favicon` | `str` or `None` | `None` | Adds a `<link rel="icon">` tag. A direct URL (`http://`, `https://`, or a protocol-relative `//...`) is used as-is. Any other value is treated as a relative path next to `file_path`, resolved the same way neighboring static assets already are — and, like `file_path` itself, its existence is checked immediately at call time, raising `FileNotFoundError` if it's missing, rather than silently 404ing only once a browser actually requests it. Must be a `str` or `None` — anything else raises `TypeError`. |
 | `title` | `str` or `None` | `None` | Sets `<title>` and an Open Graph `og:title` meta tag. Falls back to the Markdown file's own filename (e.g. `"guide.md"`) when omitted. Must be a `str` or `None`. |
 | `description` | `str` or `None` | `None` | Adds a `<meta name="description">` tag and an `og:description` Open Graph tag — useful for link-preview cards on social platforms/chat apps. Must be a `str` or `None`. |
 
@@ -185,7 +191,7 @@ staypresent.web.markdown("docs/guide.md", path="/docs", favicon="favicon.png")
 
 ```
 
-Here, `favicon.png` must exist in the same directory as `docs/guide.md`. Once the page is served (at `/docs/`, after the trailing-slash redirect described in [3.5](#35-custom-paths--multiple-responses)), the browser requests `/docs/favicon.png`, which StayPresent resolves via the same static-asset lookup used for CSS/JS/images referenced from HTML/Markdown content.
+Here, `favicon.png` must exist in the same directory as `docs/guide.md` — checked immediately when `markdown()` is called, so a typo surfaces right away instead of only once a visitor's browser requests the icon. Once the page is served (at `/docs/`, after the trailing-slash redirect described in [3.5](#35-custom-paths--multiple-responses)), the browser requests `/docs/favicon.png`, which StayPresent resolves via the same static-asset lookup used for CSS/JS/images referenced from HTML/Markdown content.
 
 ```python
 staypresent.web.markdown("docs/guide.md", favicon="https://example.com/icon.ico")
@@ -379,13 +385,16 @@ staypresent.run(bots=[
 | `bot_args` | `list` | `None` | CLI arguments to pass to every bot in `bot_file`/`bot_module` (e.g., `["--verbose"]`). Must be a list, not a bare string. Ignored when `bots` is used. |
 | `env` | `dict` | `None` | Environment variables injected into every bot in `bot_file`/`bot_module`, merged over the current process's environment. Ignored when `bots` is used. |
 | `bots` | `list[dict]` | `None` | Per-bot configuration: `[{"file": ...}, {"module": ...}, ...]`, each with optional `"args"`/`"env"` — exactly one of `"file"`/`"module"` per entry. Mutually exclusive with `bot_file`/`bot_module`/`bot_args`/`env`. |
+| `install_signal_handlers` | `bool` | `True` | Whether `run()` installs its own `SIGINT`/`SIGTERM` handlers for graceful shutdown. When `True`, any handler your own script already registered for those signals *before* calling `run()` is chained: `run()`'s handler runs its own cleanup (terminating bot processes, logging active cron pingers) first, then calls your previously-installed handler afterward, rather than silently discarding it. Set to `False` to skip installing StayPresent's handlers entirely — useful if your script wants full, exclusive control over shutdown signaling. |
+
+> **Note on calling `run()` twice:** `run()` uses a single, shared, module-level Flask app (`staypresent.server.app`), so it's designed to be called exactly once per process. A second call raises `RuntimeError` immediately, explaining the issue and pointing at passing every bot to one `run()` call instead (via `bot_file`/`bot_module` as a list, or via `bots`) — see [Section 4.1](#41-running-multiple-bots). Without this check, a second call would instead fail later with a generic `OSError: [Errno 98] Address already in use` from trying to bind the same `host`/`port` twice, with no indication of the real cause.
 
 ### Crash Recovery Protocol
 
 StayPresent strictly monitors every bot's subprocess lifecycle, independently:
 
 * **Clean Exits:** An exit code of `0` is treated as an intentional shutdown for that bot and bypasses restart logic.
-* **Signals:** Interruptions (`SIGINT`/`Ctrl+C`, `SIGTERM`) initiate a clean teardown of the server and every bot. (Signal handlers can only be registered on the main thread — if `run()` is called from elsewhere, a warning is logged and graceful signal handling is skipped rather than crashing.)
+* **Signals:** Interruptions (`SIGINT`/`Ctrl+C`, `SIGTERM`) initiate a clean teardown of the server and every bot. If your own script already installed a handler for `SIGINT`/`SIGTERM` before calling `run()`, it's chained — called after StayPresent's own cleanup finishes, not silently replaced (see `install_signal_handlers` in the parameter table above). Signal handlers can only be registered on the main thread — if `run()` is called from elsewhere, a warning is logged and graceful signal handling is skipped rather than crashing.
 * **Consecutive-Crash Budget:** `max_restarts` counts *consecutive* crashes. If a bot stays up for at least `restart_reset_after` seconds after a restart, its counter resets to 0 — so a long-running bot that occasionally crashes once isn't penalized for crashes from long ago.
 * **Terminal Failures:** If `max_restarts` is exhausted for a bot, or if restarts are disabled and it crashes, that bot is marked as permanently failed (but other bots keep running). Once every bot has finished, if any bot ended in a permanently-failed state, `staypresent.run()` exits the main process with a non-zero exit code, so platform-level orchestrators (Docker, systemd, Render, Railway) correctly detect the failure and can apply their own restart policy.
 * **Relaunch Failures:** If the OS itself refuses to spawn a replacement process during a restart (out of file descriptors/memory, a process-count ulimit, etc.), that's treated as a terminal failure for that bot rather than crashing the monitor thread.
@@ -476,6 +485,8 @@ for handle in staypresent.active_cron_handles():
 
 ```
 
+> **Note:** `active_cron_handles()` finds a `CronHandle` regardless of whether you kept a reference to it yourself — including the common "fire-and-forget" pattern where the return value of `cron()` is discarded entirely (e.g. `staypresent.cron("https://my-bot.onrender.com")` with no assignment) for a keep-warm pinger you never intend to `.stop()`. The registry holds its own reference to every handle until that handle's `.stop()` is called (or its background thread has otherwise exited), so a discarded return value never causes the job to silently disappear from introspection.
+
 `staypresent.run()` itself calls this during its `Ctrl+C`/`SIGTERM` shutdown sequence and logs any cron pinger(s) still running at that point, purely for visibility — it does not stop or wait on them; they're daemon threads and exit with the process regardless.
 
 ---
@@ -509,6 +520,26 @@ Everything else (plain text, and any of the constructs above) is HTML-escaped be
 
 Escaping is applied exactly once per character, including inside link/image URLs and titles and inside autolinks — so a URL with a query string like `[docs](https://example.com/x?a=1&b=2)` renders as `href="https://example.com/x?a=1&amp;b=2"` (a single, correctly-escaped `&amp;`), not a mangled `&amp;amp;b=2`, and an autolink like `<https://example.com/x?a=1&b=2>` keeps its full URL instead of being truncated at the `&`.
 
+**Nested inline content inside link/image text** — code spans, emphasis/bold/strikethrough, and images all work correctly when nested inside a link's text, including the very common "clickable badge/logo" README pattern:
+
+```markdown
+[`code`](https://example.com)
+[**bold link**](https://example.com)
+[![badge](badge.svg)](https://example.com)
+
+```
+
+renders as:
+
+```html
+<a href="https://example.com"><code>code</code></a>
+<a href="https://example.com"><strong>bold link</strong></a>
+<a href="https://example.com"><img src="badge.svg" alt="badge"></a>
+
+```
+
+Internally, code spans/escapes/images are protected from further processing by being replaced with an opaque placeholder token before links are parsed, then restored afterward — restoration happens in reverse (highest-placeholder-index-first) order, since a placeholder can only ever have a *lower*-index placeholder nested inside it (never a higher one), which is what lets a placeholder trapped inside a link's own stashed HTML resolve correctly instead of leaking a raw `\x00N\x00` token into the page. A link's text also goes through emphasis/bold/strikethrough substitution directly (not just the surrounding page text), so `**bold**` inside link text renders as `<strong>`, not literal asterisks.
+
 ### Styling
 
 Rendered Markdown is wrapped in `<article class="markdown-body">` and styled with a bundled stylesheet closely modeled on GitHub's own `.markdown-body` styles — headings, tables, code blocks, blockquotes, and images all get sensible, familiar styling with no configuration needed. The stylesheet supports:
@@ -537,7 +568,7 @@ This is a lightweight renderer, not a full CommonMark implementation. It does no
 
 ### `staypresent`
 
-* **`run(bot_file: str | list[str] = None, bot_module: str | list[str] = None, host: str = "0.0.0.0", port: int = 8080, production: bool = True, threads: int = 4, restart_on_crash: bool = True, max_restarts: int = 5, restart_delay: float = 2.0, restart_reset_after: float = 60.0, bot_args: list = None, env: dict = None, bots: list[dict] = None)`** – Starts the HTTP server and manages the lifecycle of one or more bot processes.
+* **`run(bot_file: str | list[str] = None, bot_module: str | list[str] = None, host: str = "0.0.0.0", port: int = 8080, production: bool = True, threads: int = 4, restart_on_crash: bool = True, max_restarts: int = 5, restart_delay: float = 2.0, restart_reset_after: float = 60.0, bot_args: list = None, env: dict = None, bots: list[dict] = None, install_signal_handlers: bool = True)`** – Starts the HTTP server and manages the lifecycle of one or more bot processes. Raises `RuntimeError` if called more than once in the same process — see the note in [Section 4](#4-process-execution-staypresentrun).
 * **`ping(host: str, port: int = None, path: str = "/", timeout: float = 10.0, https: bool = None) -> dict`** – Sends a synchronous HTTP request.
 * **`cron(host: str, port: int = None, path: str = "/", interval: float = 300.0, repeat: bool = True, timeout: float = 10.0, https: bool = None, on_success=None, on_failure=None) -> CronHandle`** – Runs scheduled background keep-warm requests.
 * **`active_cron_handles() -> list[CronHandle]`** – Returns every currently-running `CronHandle` from any past call to `cron()`. See [Section 5](#5-self-ping--keep-warm-staypresentping--staypresentcron).
@@ -552,9 +583,10 @@ You'll see log lines for:
 
 * Web server startup (`waitress` vs. the Flask dev-server fallback, and which host/port it bound to).
 * Each bot process starting, crashing, restarting, exhausting its restart budget, or exiting cleanly.
-* Signal-triggered shutdowns (`SIGINT`/`SIGTERM`).
+* Signal-triggered shutdowns (`SIGINT`/`SIGTERM`), and a previously-installed handler being chained afterward, if any.
 * Unexpected web-server thread failures (both at startup and later during the run).
 * Cron pinger start/stop events (at `INFO`) and individual failed pings (at `WARNING`, via `ping()`'s own logging).
+* A one-time `WARNING` per directory the first time `web.html()`/`web.markdown()` exposes it as a static-asset fallback — see the security note in [Section 3.3](#33-html--static-assets).
 
 If you want to adjust the log level or attach your own handler, grab the logger directly:
 

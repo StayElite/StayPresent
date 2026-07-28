@@ -1,4 +1,5 @@
 import copy
+import json as _json
 import logging
 import os
 import re
@@ -136,12 +137,53 @@ def json(data: Any, path: str = "/") -> None:
         path: The route to host this response on. Defaults to "/". Pass a
             different path (e.g. "/api") to host multiple independent
             responses at once.
+
+    Raises:
+        TypeError: if `data` isn't JSON-serializable.
     """
+    try:
+        _json.dumps(data)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"staypresent.web.json(): 'data' is not JSON-serializable: {exc}"
+        ) from exc
+
     p = _normalize_path(path)
     with _lock:
         previous = _routes.get(p)
         _routes[p] = {"type": "json", "value": copy.deepcopy(data)}
     _warn_if_overwriting(p, previous, "json")
+
+
+# Directories we've already warned about, so a bot that calls html()/
+# markdown() repeatedly against the same directory (e.g. re-registering a
+# route to refresh it) doesn't spam the log every time.
+_warned_directories = set()
+
+
+def _warn_serves_whole_directory(file_path: str) -> None:
+    """
+    Log a one-time, hard-to-miss warning that registering `file_path` via
+    html()/markdown() serves every file in its directory as a static-asset
+    fallback (see server.py's catch_all -> _find_asset_owner) - not just
+    files actually referenced from the page. This is "working as designed"
+    (it's how relative CSS/JS/image links next to your HTML/Markdown get
+    served at all), but the *scope* - whole directory, not an allowlist of
+    referenced files - is easy to miss, and a `.env`/`.git/`/bot source
+    file sitting in the same directory would be silently downloadable.
+    """
+    directory = os.path.dirname(os.path.abspath(file_path))
+    if directory in _warned_directories:
+        return
+    _warned_directories.add(directory)
+    logger.warning(
+        "staypresent.web: every file inside '%s' is now servable to anyone who requests "
+        "it by name (not just files linked from '%s') - this is how relative CSS/JS/image "
+        "links next to it get served, but it also means secrets (.env), source files, or "
+        "'.git/' in that same directory would be downloadable too. Keep '%s' in a "
+        "directory containing only files you're happy to have publicly served.",
+        directory, os.path.basename(file_path), directory,
+    )
 
 
 def html(file_path: str, path: str = "/") -> None:
@@ -152,6 +194,15 @@ def html(file_path: str, path: str = "/") -> None:
     file on disk (e.g. a template) without restarting the bot. Any other
     files (CSS, JS, images) in the same directory are automatically served
     alongside it.
+
+    ⚠️  SECURITY: this means StayPresent will serve *every* file in
+    `file_path`'s directory - not just files actually linked/referenced
+    from the page - to anyone who requests them by name, for any
+    unmatched request path under this route. If a `.env`, your bot's own
+    source file, or a `.git/` directory sits next to `file_path`, it is
+    downloadable by anyone who guesses (or brute-forces) the filename.
+    Put `file_path` in its own directory containing only files you're
+    happy to have publicly served, and keep secrets/source elsewhere.
 
     Example:
         staypresent.web.html("template/index.html")
@@ -173,6 +224,8 @@ def html(file_path: str, path: str = "/") -> None:
         raise FileNotFoundError(
             f"staypresent.web.html(): file '{file_path}' does not exist or is not a file."
         )
+
+    _warn_serves_whole_directory(file_path)
 
     p = _normalize_path(path)
     with _lock:
@@ -205,6 +258,12 @@ def markdown(
     files (images, etc.) in the same directory are automatically served
     alongside it, the same way `staypresent.web.html()` serves static
     assets.
+
+    ⚠️  SECURITY: same as `staypresent.web.html()` - every file in
+    `file_path`'s directory becomes servable to anyone who requests it by
+    name, not just files actually referenced from the rendered page. Keep
+    `file_path` in a directory containing only files you're happy to have
+    publicly served.
 
     Example:
         staypresent.web.markdown("CHANGELOG.md")
@@ -263,6 +322,21 @@ def markdown(
             raise TypeError(
                 f"staypresent.web.markdown(): '{name}' must be a str or None, got {type(value).__name__}."
             )
+
+    if favicon and not favicon.startswith(("http://", "https://", "//")):
+        # Not a direct URL - resolved the same way neighboring assets are:
+        # relative to file_path's own directory. Check it exists up front,
+        # the same way file_path itself is checked above, rather than
+        # letting a typo'd favicon silently 404 only when a browser
+        # actually requests it.
+        favicon_path = os.path.join(os.path.dirname(os.path.abspath(file_path)), favicon)
+        if not os.path.isfile(favicon_path):
+            raise FileNotFoundError(
+                f"staypresent.web.markdown(): favicon '{favicon}' does not exist next to "
+                f"'{file_path}' (looked for '{favicon_path}')."
+            )
+
+    _warn_serves_whole_directory(file_path)
 
     p = _normalize_path(path)
     with _lock:

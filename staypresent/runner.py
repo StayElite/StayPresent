@@ -9,6 +9,15 @@ import os
 from . import pinger
 from .server import app
 
+# run() uses a shared, module-level Flask app (staypresent.server.app),
+# so a second call in the same process would just try to bind the exact
+# same host:port a second time - which fails, but only with a generic OS-
+# level "address already in use" error that gives no hint about *why*.
+# This guard turns that into an explicit, specific error at the point of
+# the mistake instead.
+_run_lock = threading.Lock()
+_run_called = False
+
 logger = logging.getLogger("staypresent")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -300,6 +309,7 @@ def run(
     bot_args: list = None,
     env: dict = None,
     bots: list = None,
+    install_signal_handlers: bool = True,
 ):
     """
     Starts the web server + your bot process(es).
@@ -405,7 +415,29 @@ def run(
             exactly one of `"file"`/`"module"` per entry (`"args"`/`"env"`
             are optional). Mutually exclusive with
             `bot_file`/`bot_module`/`bot_args`/`env`.
+        install_signal_handlers: If True (default), StayPresent installs
+            its own SIGINT/SIGTERM handlers to gracefully stop the bot
+            process(es) and web server on Ctrl+C / a container stop
+            signal. Any handler your own script already installed for
+            SIGINT/SIGTERM (before calling `run()`) is *chained* - it's
+            called after StayPresent's own cleanup runs, so it still fires
+            instead of silently being replaced and discarded. Set this to
+            False to skip installing StayPresent's handlers entirely and
+            take full responsibility for shutdown signaling yourself.
     """
+
+    global _run_called
+    with _run_lock:
+        if _run_called:
+            raise RuntimeError(
+                "staypresent.run() was already called once in this process. It uses a "
+                "single shared, module-level web server, so calling it again would just "
+                "try to bind the same host:port a second time and fail with a generic "
+                "'address already in use' error. If you meant to run multiple bots, pass "
+                "them all to a single run() call instead (bot_file=['a.py', 'b.py'], or "
+                "bots=[{'file': 'a.py'}, {'file': 'b.py'}])."
+            )
+        _run_called = True
 
     bot_configs = _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots)
 
@@ -478,6 +510,11 @@ def run(
     stopping = threading.Event()
     failures = {}  # index -> exit code, for bots that ultimately gave up
 
+    # Populated below (before any signal can actually be delivered) with
+    # whatever handler was previously installed for SIGINT/SIGTERM, if any
+    # - so shutdown() can chain to it instead of silently discarding it.
+    previous_handlers = {}
+
     def shutdown(signum, frame):
         stopping.set()
         try:
@@ -508,18 +545,41 @@ def run(
                 logger.warning("A bot process did not exit in time, killing it.")
                 proc.kill()
                 proc.wait()
+
+        # Chain to whatever handler the host script had already installed
+        # for this signal (if any) before we replaced it, so it still runs
+        # instead of being silently discarded. signal.signal() returns
+        # signal.SIG_DFL/signal.SIG_IGN (not callables) when nothing custom
+        # was previously installed - only call through for an actual
+        # callable.
+        prev = previous_handlers.get(signum)
+        if callable(prev):
+            try:
+                prev(signum, frame)
+            except SystemExit:
+                raise
+            except Exception:  # noqa: BLE001 - a bad chained handler must not block our own exit
+                logger.exception("Previously-installed %s handler raised an exception.", sig_name)
+
         sys.exit(0)
 
-    try:
-        signal.signal(signal.SIGINT, shutdown)
-        signal.signal(signal.SIGTERM, shutdown)
-    except ValueError:
-        # signal handlers can only be registered on the main thread;
-        # if run() is called elsewhere, skip graceful signal handling
-        # rather than crashing.
-        logger.warning(
-            "Could not register signal handlers (not running on main thread). "
-            "Ctrl+C / SIGTERM will not gracefully stop the bot process(es)."
+    if install_signal_handlers:
+        try:
+            previous_handlers[signal.SIGINT] = signal.signal(signal.SIGINT, shutdown)
+            previous_handlers[signal.SIGTERM] = signal.signal(signal.SIGTERM, shutdown)
+        except ValueError:
+            # signal handlers can only be registered on the main thread;
+            # if run() is called elsewhere, skip graceful signal handling
+            # rather than crashing.
+            logger.warning(
+                "Could not register signal handlers (not running on main thread). "
+                "Ctrl+C / SIGTERM will not gracefully stop the bot process(es)."
+            )
+    else:
+        logger.info(
+            "install_signal_handlers=False - StayPresent will not install its own "
+            "SIGINT/SIGTERM handlers. Your own script is responsible for triggering "
+            "shutdown (e.g. terminating bot process(es) yourself)."
         )
 
     # Watch for the web server thread dying unexpectedly after a successful
