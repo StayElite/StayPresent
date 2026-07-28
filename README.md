@@ -19,6 +19,8 @@ A lightweight Python package designed to keep your bots and background scripts a
 
 Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **Heroku**, or any host that requires an active HTTP port to keep your service running.
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ---
 
 ## Contents
@@ -175,6 +177,8 @@ staypresent.run("bot.py")
 
 Files (images, etc.) next to your `.md` file are served automatically, exactly the same as with `html()`.
 
+> Links, images, and autolinks are escaped exactly once — a URL with a query string like `[docs](https://example.com/x?a=1&b=2)` renders with a correctly-escaped `href="https://example.com/x?a=1&amp;b=2"`, not a mangled or truncated one.
+
 ### Custom Host, Port, and Threads (Complete Example)
 
 ```python
@@ -222,6 +226,8 @@ staypresent.web.remove("/bot2")         # stop hosting a response, returns True/
 ```
 
 > **Note on `/health`:** StayPresent has a built-in default at `/health` returning `{"status": "ok"}` (see [Built-in Health Check](#built-in-health-check) below). It's a default, not a reservation — if you register your own response at `/health` via `staypresent.web`, yours is served instead.
+
+> **Note on path normalization:** a `path` has any surrounding whitespace stripped, must start with `/` (added automatically if missing), collapses repeated slashes, and drops a trailing slash — so `"status"`, `" /status"`, `"/status "`, and `"/status/"` all normalize to the same `/status` route rather than a stray space silently producing an unreachable path.
 
 > **Note on registering the same path twice:** calling `text()`/`json()`/`html()`/`markdown()` again for a path you've already registered is a normal way to update it (e.g. calling `json()` repeatedly to refresh a status payload) — the newest call always wins, silently. But if the response *type* at a path changes (e.g. it was `json` and a later call registers `text` there instead), that's usually a sign two different bots — or two different parts of your code — didn't realize they were both claiming the same path, so StayPresent logs a one-line warning to make that visible instead of just quietly serving whichever one happened to run last.
 
@@ -338,10 +344,21 @@ staypresent.run("bot.py")
 ```python
 handle.stop()               # stop the background pinger
 handle.is_running           # True/False
+handle.url                  # the URL this cron job pings
 
 ```
 
 You can also pass `on_success`/`on_failure` callbacks to react to each ping's result (e.g. for your own logging/metrics), and pass `host="127.0.0.1", port=8080` instead of a full URL if you just want to ping your own local server.
+
+Cron pingers run on daemon background threads, so they exit automatically with the process and don't need any special cleanup. If you want to see what's still active — e.g. for your own logging — `staypresent.active_cron_handles()` returns every currently-running `CronHandle` from any past call to `cron()`:
+
+```python
+for handle in staypresent.active_cron_handles():
+    print(handle.url, handle.is_running)
+
+```
+
+`staypresent.run()` itself uses this to log any cron pinger(s) still running when you stop it with `Ctrl+C`/`SIGTERM`, purely for visibility.
 
 ---
 
@@ -358,7 +375,7 @@ Launch your bot script(s) alongside the web server.
 | `host` | `str` | `"0.0.0.0"` | Host to bind the web server to. |
 | `port` | `int` | `8080` | Port to bind the web server to. |
 | `production` | `bool` | `True` | Uses `waitress` if installed. Set to `False` to force the Flask dev server. |
-| `threads` | `int` | `4` | Number of worker threads for `waitress`. Increase this if serving real web traffic rather than just keep-alive pings. *(Requires `production=True` and `waitress`)*. |
+| `threads` | `int` | `4` | Number of worker threads for `waitress`. Increase this if serving real web traffic rather than just keep-alive pings. *(Requires `production=True` and `waitress` actually installed — if it can't take effect, a non-default value is accepted but has no effect, and a warning is logged so the mismatch is visible.)* |
 | `restart_on_crash` | `bool` | `True` | Relaunch a bot process if it exits with a non-zero exit code. |
 | `max_restarts` | `int` | `5` | Maximum restart attempts per bot after a crash before giving up. |
 | `restart_delay` | `float` | `2.0` | Seconds to wait before relaunching a bot process after a crash. |
@@ -401,7 +418,8 @@ A default `/health` endpoint is available out of the box, returning `{"status": 
 | Function | Description |
 | --- | --- |
 | `ping(host, port=None, path="/", timeout=10.0, https=None)` | Send a single HTTP request and return `{"url", "ok", "status_code", "elapsed", "error"}`. |
-| `cron(host, port=None, path="/", interval=300.0, repeat=True, timeout=10.0, https=None, on_success=None, on_failure=None)` | Start a background thread that pings a URL on a schedule. Returns a `CronHandle` (`.stop()`, `.is_running`). |
+| `cron(host, port=None, path="/", interval=300.0, repeat=True, timeout=10.0, https=None, on_success=None, on_failure=None)` | Start a background thread that pings a URL on a schedule. Returns a `CronHandle` (`.stop()`, `.is_running`, `.url`). |
+| `active_cron_handles()` | Returns every currently-running `CronHandle` from any past call to `cron()`. |
 
 ---
 

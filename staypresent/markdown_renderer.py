@@ -49,7 +49,15 @@ _CODE_SPAN_RE = re.compile(r'(`+)(.+?)\1')
 _ESCAPE_RE = re.compile(r'\\([\\`*_{}\[\]()#+.!>~|<>&-])')
 _IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)')
 _LINK_RE = re.compile(r'\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)')
-_AUTOLINK_RE = re.compile(r'&lt;((?:https?|ftp)://[^\s&]+)&gt;')
+# Non-greedy up to the closing "&gt;": the text these run against has
+# already been through the whole-line html.escape() in step 3 of
+# _render_inline, so a literal "&" in the original URL (e.g. a query
+# string's "?a=1&b=2") shows up here as the *sequence* "&amp;", which
+# still contains a literal "&" character. Excluding "&" from the captured
+# run (as a naive "stop at any bare ampersand" character class would)
+# truncates the URL right at that entity. Matching non-greedily up to the
+# next "&gt;" instead captures the whole (already-escaped) URL.
+_AUTOLINK_RE = re.compile(r'&lt;((?:https?|ftp)://\S+?)&gt;')
 _BOLD_ITALIC_RE = re.compile(r'(\*\*\*|___)(?=\S)(.+?)(?<=\S)\1')
 _BOLD_RE = re.compile(r'(\*\*|__)(?=\S)(.+?)(?<=\S)\1')
 _ITALIC_STAR_RE = re.compile(r'(?<!\*)\*(?!\*)(?=\S)(.+?)(?<=\S)\*(?!\*)')
@@ -381,6 +389,20 @@ class MarkdownRenderer:
 
     # -- inline rendering -------------------------------------------------------------
 
+    @staticmethod
+    def _escape_attr_quotes(s):
+        """
+        Escape a fragment for safe use inside an HTML attribute, given that
+        it was captured (via _IMAGE_RE/_LINK_RE/_AUTOLINK_RE) from text that
+        has *already* been through the whole-line `html.escape(text,
+        quote=False)` call earlier in `_render_inline` - so `&`, `<`, `>`
+        are already entity-escaped. Only literal `"` still needs escaping;
+        running the fragment through `html.escape()` again here would
+        double-escape those already-escaped entities (e.g. turning a URL's
+        `&b=2` into `&amp;amp;b=2`).
+        """
+        return s.replace('"', "&quot;")
+
     def _stash(self, rendered_html):
         key = "\x00{}\x00".format(len(self._placeholders))
         self._placeholders.append(rendered_html)
@@ -408,9 +430,14 @@ class MarkdownRenderer:
         # 4. images
         def _image(m):
             alt, url, title = m.group(1), m.group(2), m.group(3)
-            title_attr = ' title="{}"'.format(html.escape(title)) if title else ""
+            # alt/url/title were captured from text already run through
+            # html.escape(..., quote=False) in step 3 above - only quotes
+            # need escaping here, not the whole fragment again.
+            title_attr = ' title="{}"'.format(self._escape_attr_quotes(title)) if title else ""
             return self._stash(
-                '<img src="{}" alt="{}"{}>'.format(html.escape(url, quote=True), html.escape(alt, quote=True), title_attr)
+                '<img src="{}" alt="{}"{}>'.format(
+                    self._escape_attr_quotes(url), self._escape_attr_quotes(alt), title_attr
+                )
             )
 
         text = _IMAGE_RE.sub(_image, text)
@@ -418,15 +445,21 @@ class MarkdownRenderer:
         # 5. links
         def _link(m):
             label, url, title = m.group(1), m.group(2), m.group(3)
-            title_attr = ' title="{}"'.format(html.escape(title)) if title else ""
-            return self._stash('<a href="{}"{}>{}</a>'.format(html.escape(url, quote=True), title_attr, label))
+            # Same reasoning as _image above: url/title are already
+            # entity-escaped from step 3, so only quotes need handling here.
+            # `label` is left as-is - it's rendered as element content, not
+            # an attribute, so it's already correctly single-escaped.
+            title_attr = ' title="{}"'.format(self._escape_attr_quotes(title)) if title else ""
+            return self._stash('<a href="{}"{}>{}</a>'.format(self._escape_attr_quotes(url), title_attr, label))
 
         text = _LINK_RE.sub(_link, text)
 
         # 6. autolinks
         def _autolink(m):
             url = m.group(1)
-            return self._stash('<a href="{0}">{0}</a>'.format(html.escape(url, quote=True)))
+            # url is already entity-escaped (captured from post-step-3 text
+            # via the non-greedy _AUTOLINK_RE above) - only quotes remain.
+            return self._stash('<a href="{0}">{0}</a>'.format(self._escape_attr_quotes(url)))
 
         text = _AUTOLINK_RE.sub(_autolink, text)
 

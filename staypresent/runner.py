@@ -6,6 +6,7 @@ import time
 import sys
 import os
 
+from . import pinger
 from .server import app
 
 logger = logging.getLogger("staypresent")
@@ -70,12 +71,32 @@ def _run_server(
             if used_waitress:
                 return
 
+            threads_note = (
+                f" Note: threads={threads} has no effect on this fallback server - "
+                "Flask's development server doesn't use a thread-pool size."
+                if threads != 4
+                else ""
+            )
             logger.warning(
                 "waitress is not installed, falling back to Flask's built-in "
                 "development server (not recommended for production). "
                 "Install it with `pip install waitress` or `pip install staypresent[prod]` "
                 "to silence this warning, or pass staypresent.run(..., production=False) "
-                "to use the dev server intentionally."
+                "to use the dev server intentionally.%s",
+                threads_note,
+            )
+        elif threads != 4:
+            # threads= only ever does anything when waitress actually ends
+            # up serving the app (production=True and waitress installed).
+            # With production=False, Flask's own dev server is always used
+            # instead, and it silently ignores threads= entirely - so a
+            # non-default value here would otherwise look like it's doing
+            # something when it isn't.
+            logger.warning(
+                "staypresent.run(): threads=%s has no effect because production=False - "
+                "Flask's development server doesn't use a thread-pool size. This only "
+                "applies when production=True and waitress is installed.",
+                threads,
             )
 
         app.run(host=host, port=port, threaded=True)
@@ -464,6 +485,18 @@ def run(
         except ValueError:
             sig_name = str(signum)
         logger.info("Received %s, stopping...", sig_name)
+
+        # cron() pingers run on daemon threads that die with the process
+        # (sys.exit() below) and aren't otherwise tracked here - this is
+        # just a log line for visibility into what was still running, not
+        # an attempt to join/stop those threads.
+        active_crons = pinger.active_cron_handles()
+        if active_crons:
+            logger.info(
+                "%d cron pinger(s) still running at shutdown: %s",
+                len(active_crons),
+                ", ".join(h.url for h in active_crons),
+            )
 
         procs = [p for p in proc_holder.values() if p is not None]
         for proc in procs:

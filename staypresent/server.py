@@ -147,7 +147,7 @@ def catch_all(req_path):
         canonical = "/"
 
     state = web.get(canonical)
-    if not state and canonical == "/health":
+    if not state and web.is_builtin_default_path(canonical):
         # Stay Present's built-in default - only used when the user hasn't
         # registered their own response at "/health" (see below: once they
         # do, `state` is truthy and this fallback is simply never reached).

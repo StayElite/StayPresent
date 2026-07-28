@@ -227,7 +227,7 @@ staypresent.web.markdown("CHANGELOG.md", path="/changelog")
 
 **Path rules:**
 
-* A path is normalized: it must start with `/`, repeated slashes are collapsed, and a trailing slash is stripped (`"/status/"` and `"/status"` refer to the same route).
+* A path is normalized: surrounding whitespace is stripped (so `" /status"` or `"/status "` — easy to introduce via copy-paste or an f-string — are treated the same as `"/status"` instead of silently registering an unreachable route), it must start with `/`, repeated slashes are collapsed, and a trailing slash is stripped (`"/status/"` and `"/status"` refer to the same route).
 * Paths must not contain `?` or `#` — StayPresent raises `ValueError` if they do, since those characters belong in a query string/fragment, not a route.
 * `path` must be a non-empty `str` — any other type raises `TypeError`, an empty/whitespace-only string raises `ValueError`.
 
@@ -371,7 +371,7 @@ staypresent.run(bots=[
 | `host` | `str` | `"0.0.0.0"` | Network interface to bind the web server. |
 | `port` | `int` | `8080` | Port allocation for the web server. Must be between 0 and 65535. |
 | `production` | `bool` | `True` | Utilizes `waitress` if available. Set to `False` to force Flask's dev server. |
-| `threads` | `int` | `4` | Worker threads for `waitress` (requires `production=True`). Must be at least 1. |
+| `threads` | `int` | `4` | Worker threads for `waitress` (requires `production=True` *and* `waitress` actually installed). Must be at least 1. If it can't take effect — `production=False`, or `waitress` isn't installed and StayPresent falls back to Flask's dev server — a non-default value is silently accepted but has no effect on the resulting server; a warning is logged in that case so the mismatch shows up in your logs rather than looking like it worked. |
 | `restart_on_crash` | `bool` | `True` | Relaunches a bot upon a non-zero exit code. |
 | `max_restarts` | `int` | `5` | Maximum consecutive restart attempts, per bot. Must be `>= 0`. |
 | `restart_delay` | `float` | `2.0` | Seconds to wait before process respawn. Must be `>= 0`. |
@@ -462,8 +462,21 @@ staypresent.cron(
 ```python
 handle.stop(wait: bool = False, timeout: float = None)  # stop the background pinger; safe to call more than once
 handle.is_running                                       # property: True/False
+handle.url                                              # property: the URL this cron job pings
 
 ```
+
+Cron pingers run on daemon background threads, so they're never registered with `staypresent.run()`'s own shutdown handling the way bot processes are — in practice this doesn't matter, since daemon threads are torn down automatically when the process exits. If you do want visibility into what's still active (e.g. for your own logging), `staypresent.active_cron_handles()` returns every currently-running `CronHandle` from any past call to `cron()`:
+
+```python
+import staypresent
+
+for handle in staypresent.active_cron_handles():
+    print(handle.url, handle.is_running)
+
+```
+
+`staypresent.run()` itself calls this during its `Ctrl+C`/`SIGTERM` shutdown sequence and logs any cron pinger(s) still running at that point, purely for visibility — it does not stop or wait on them; they're daemon threads and exit with the process regardless.
 
 ---
 
@@ -493,6 +506,8 @@ This is a *default*, not a *reservation*: if you register your own response at `
 * **Backslash escapes** — `\*`, `\_`, `` \` ``, etc. for literal punctuation.
 
 Everything else (plain text, and any of the constructs above) is HTML-escaped before rendering, so Markdown source containing `<`, `>`, `&`, or literal `<script>` tags cannot inject markup into the page — only recognized raw-HTML blocks are passed through, and even those are limited to a fixed list of known block-level tag names.
+
+Escaping is applied exactly once per character, including inside link/image URLs and titles and inside autolinks — so a URL with a query string like `[docs](https://example.com/x?a=1&b=2)` renders as `href="https://example.com/x?a=1&amp;b=2"` (a single, correctly-escaped `&amp;`), not a mangled `&amp;amp;b=2`, and an autolink like `<https://example.com/x?a=1&b=2>` keeps its full URL instead of being truncated at the `&`.
 
 ### Styling
 
@@ -525,6 +540,7 @@ This is a lightweight renderer, not a full CommonMark implementation. It does no
 * **`run(bot_file: str | list[str] = None, bot_module: str | list[str] = None, host: str = "0.0.0.0", port: int = 8080, production: bool = True, threads: int = 4, restart_on_crash: bool = True, max_restarts: int = 5, restart_delay: float = 2.0, restart_reset_after: float = 60.0, bot_args: list = None, env: dict = None, bots: list[dict] = None)`** – Starts the HTTP server and manages the lifecycle of one or more bot processes.
 * **`ping(host: str, port: int = None, path: str = "/", timeout: float = 10.0, https: bool = None) -> dict`** – Sends a synchronous HTTP request.
 * **`cron(host: str, port: int = None, path: str = "/", interval: float = 300.0, repeat: bool = True, timeout: float = 10.0, https: bool = None, on_success=None, on_failure=None) -> CronHandle`** – Runs scheduled background keep-warm requests.
+* **`active_cron_handles() -> list[CronHandle]`** – Returns every currently-running `CronHandle` from any past call to `cron()`. See [Section 5](#5-self-ping--keep-warm-staypresentping--staypresentcron).
 
 ---
 

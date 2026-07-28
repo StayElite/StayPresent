@@ -45,6 +45,14 @@ def _normalize_path(path: str) -> str:
         raise TypeError(f"staypresent.web: 'path' must be a str, got {type(path).__name__}.")
     if not path or not path.strip():
         raise ValueError("staypresent.web: 'path' cannot be empty. Use '/' for the default route.")
+
+    # Strip surrounding whitespace up front - a stray leading/trailing space
+    # (easy to introduce via copy-paste or an f-string, e.g. f" /{name}")
+    # would otherwise survive into the "normalized" path (e.g. " /abc" or
+    # "/abc "), silently producing a route nothing can ever actually reach,
+    # with no error to catch the mistake.
+    path = path.strip()
+
     if "?" in path or "#" in path:
         raise ValueError(
             f"staypresent.web: 'path' must not contain query strings or fragments, got '{path}'."
@@ -56,6 +64,20 @@ def _normalize_path(path: str) -> str:
         normalized = normalized.rstrip("/")
 
     return normalized
+
+
+def is_builtin_default_path(path: str) -> bool:
+    """
+    Return True if `path` is one of StayPresent's own built-in default
+    paths (currently just "/health" - see `_BUILTIN_DEFAULT_PATHS` above).
+
+    `server.py`'s catch-all route uses this (rather than hardcoding the
+    literal path string itself) to decide whether to fall back to a
+    built-in response when nothing has been registered at `path` - so
+    adding a new built-in default in the future only means updating
+    `_BUILTIN_DEFAULT_PATHS`, not every place that needs to know about it.
+    """
+    return _normalize_path(path) in _BUILTIN_DEFAULT_PATHS
 
 
 def _warn_if_overwriting(path: str, previous: dict, new_type: str) -> None:

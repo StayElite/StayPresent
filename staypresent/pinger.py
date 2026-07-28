@@ -3,11 +3,21 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import weakref
 
 logger = logging.getLogger("staypresent")
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _ANY_HOSTS = {"0.0.0.0", "::", ""}
+
+# Every CronHandle ever returned by cron(), tracked weakly so this registry
+# never keeps a handle (or its thread) alive on its own. cron() threads are
+# daemon threads not otherwise registered with staypresent.run()'s own
+# shutdown() handler - harmless in practice (daemon threads die with the
+# process on sys.exit()), but it means there was previously no way to see,
+# from run()'s shutdown sequence, which cron jobs were still ticking at
+# shutdown time. active_cron_handles() below closes that gap.
+_cron_registry = weakref.WeakSet()
 
 
 def _build_url(host: str, port: int = None, path: str = "/", https: bool = None) -> str:
@@ -125,6 +135,11 @@ class CronHandle:
     def is_running(self) -> bool:
         return self._thread.is_alive() and not self._stop_event.is_set()
 
+    @property
+    def url(self) -> str:
+        """The URL this cron job pings."""
+        return self._url
+
 
 def cron(
     host: str,
@@ -193,4 +208,20 @@ def cron(
     thread = threading.Thread(target=_loop, daemon=True, name=f"staypresent-cron-{host}")
     thread.start()
 
-    return CronHandle(thread, stop_event, url)
+    handle = CronHandle(thread, stop_event, url)
+    _cron_registry.add(handle)
+    return handle
+
+
+def active_cron_handles() -> list:
+    """
+    Return every currently-registered `CronHandle` (from any past call to
+    `cron()`) whose background thread is still running - i.e. `.is_running`
+    is True. Handles that have been stopped, or whose thread has otherwise
+    exited, are left out.
+
+    Useful for introspecting cron jobs that are still active - for example,
+    `staypresent.run()`'s own shutdown sequence uses this to log any cron
+    pinger(s) still ticking when the process is asked to stop.
+    """
+    return [h for h in list(_cron_registry) if h.is_running]
