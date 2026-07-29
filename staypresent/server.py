@@ -3,7 +3,7 @@ import logging
 import os
 import re
 
-from flask import Flask, Response, abort, jsonify, redirect, send_from_directory
+from flask import Flask, Response, abort, jsonify, redirect, request, send_from_directory
 from werkzeug.exceptions import NotFound
 
 from . import web
@@ -158,8 +158,13 @@ def catch_all(req_path):
         if response_type in ("html", "markdown") and canonical != "/" and not had_trailing_slash:
             # Redirect "/dashboard" -> "/dashboard/" so relative asset links
             # inside the served file (e.g. href="style.css") resolve against
-            # this page's own directory instead of its parent.
-            return redirect(canonical + "/", code=308)
+            # this page's own directory instead of its parent. Preserve any
+            # query string (e.g. "/dashboard?tab=2") - dropping it here would
+            # silently lose it on the very first request to a fresh path.
+            target = canonical + "/"
+            if request.query_string:
+                target += "?" + request.query_string.decode("utf-8", "replace")
+            return redirect(target, code=308)
         return _render_response(state)
 
     owner = _find_asset_owner(canonical)

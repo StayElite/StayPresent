@@ -529,6 +529,11 @@ def run(
     # see every bot's live process, even ones (re)launched after it was
     # registered.
     proc_holder = {i: None for i in range(total_bots)}
+    # Guards proc_holder writes (a crash-restart storing its newly spawned
+    # Popen) against shutdown()'s read (snapshotting every live process to
+    # terminate) - see the restart-delay handling in _manage_bot() below for
+    # why this matters.
+    proc_lock = threading.Lock()
     stopping = threading.Event()
     failures = {}  # index -> exit code, for bots that ultimately gave up
 
@@ -557,7 +562,8 @@ def run(
                 ", ".join(h.url for h in active_crons),
             )
 
-        procs = [p for p in proc_holder.values() if p is not None]
+        with proc_lock:
+            procs = [p for p in proc_holder.values() if p is not None]
         for proc in procs:
             proc.terminate()
         for proc in procs:
@@ -698,23 +704,50 @@ def run(
                 "%s crashed with code %s. Restarting in %.1fs... (attempt %s/%s)",
                 label, exit_code, restart_delay, restarts, max_restarts,
             )
-            time.sleep(restart_delay)
-            try:
-                process = subprocess.Popen(_bot_cmd(cfg), env=_bot_env(cfg))
-            except OSError as exc:
-                # The OS itself refused to spawn the process (out of file
-                # descriptors/memory, a process-count ulimit, etc) - this is
-                # distinct from the bot starting and then crashing, which is
-                # handled above. Give up cleanly with a clear log message
-                # instead of letting this exception escape unhandled and
-                # take down this bot's monitor thread with a raw traceback.
-                logger.error(
-                    "Failed to relaunch %s after crash (attempt %s/%s): %s. Giving up.",
-                    label, restarts, max_restarts, exc,
-                )
-                failures[index] = 1
+            # stopping.wait() instead of time.sleep(): time.sleep() cannot be
+            # woken up early, so a shutdown signal arriving during this
+            # backoff window would sit here for the full restart_delay
+            # before this thread ever re-checked `stopping` - and since
+            # these monitor threads are non-daemon, the whole process (even
+            # after shutdown()'s own sys.exit(0)) would hang until that
+            # delay elapsed. stopping.wait(timeout=...) returns immediately
+            # (True) the moment shutdown() calls stopping.set(), the same
+            # pattern pinger.py's cron loop already uses for its own
+            # interval wait.
+            if stopping.wait(timeout=restart_delay):
                 return
-            proc_holder[index] = process
+            with proc_lock:
+                # Re-check while holding the same lock shutdown() uses to
+                # snapshot proc_holder for termination. Without this,
+                # `stopping` could still flip to set() in the narrow gap
+                # between the wait() above returning and this line - the
+                # lock (not the flag alone) is what actually closes that
+                # window: either shutdown() takes the lock first (sees
+                # nothing new to terminate here, since this process doesn't
+                # exist yet) and this thread then sees `stopping` set and
+                # returns without spawning, or this thread takes the lock
+                # first (spawns and records the process) and shutdown() then
+                # sees - and terminates - it in its own snapshot. Either
+                # ordering is safe; only "spawn now, be discovered by
+                # shutdown() never" is not, and this lock rules that out.
+                if stopping.is_set():
+                    return
+                try:
+                    process = subprocess.Popen(_bot_cmd(cfg), env=_bot_env(cfg))
+                except OSError as exc:
+                    # The OS itself refused to spawn the process (out of file
+                    # descriptors/memory, a process-count ulimit, etc) - this is
+                    # distinct from the bot starting and then crashing, which is
+                    # handled above. Give up cleanly with a clear log message
+                    # instead of letting this exception escape unhandled and
+                    # take down this bot's monitor thread with a raw traceback.
+                    logger.error(
+                        "Failed to relaunch %s after crash (attempt %s/%s): %s. Giving up.",
+                        label, restarts, max_restarts, exc,
+                    )
+                    failures[index] = 1
+                    return
+                proc_holder[index] = process
             process_started_at = time.monotonic()
 
     monitor_threads = [

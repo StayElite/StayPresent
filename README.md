@@ -121,9 +121,9 @@ Fully optional, off by default. See **[Self-Ping / Keep-Warm](DOCUMENTATION.md#5
 | `staypresent.cron(host, ...)` | Start a recurring background ping (`CronHandle`). |
 | `staypresent.active_cron_handles()` | List every currently-running cron pinger. |
 
-Every parameter, default, and validation rule is documented in full in **[§8 API Reference](DOCUMENTATION.md#8-api-reference)** of DOCUMENTATION.md, along with **[§4 Process Execution](DOCUMENTATION.md#4-process-execution-staypresentrun)** (crash recovery, multi-bot, `bot_module`) and **[§3 Web Server Configuration](DOCUMENTATION.md#3-web-server-configuration-staypresentweb)** (all response types, theming, static assets).
+Every parameter, default, and validation rule is documented in full in **[API Reference](DOCUMENTATION.md#8-api-reference)** of DOCUMENTATION.md, along with **[Process Execution](DOCUMENTATION.md#4-process-execution-staypresentrun)** (crash recovery, multi-bot, `bot_module`) and **[Web Server Configuration](DOCUMENTATION.md#3-web-server-configuration-staypresentweb)** (all response types, theming, static assets).
 
-A built-in `/health` endpoint (`{"status": "ok"}`) is available out of the box for uptime monitors — see **[§6](DOCUMENTATION.md#6-built-in-health-check)**.
+A built-in `/health` endpoint (`{"status": "ok"}`) is available out of the box for uptime monitors — see **[Built-in Health Check](DOCUMENTATION.md#6-built-in-health-check)**.
 
 ---
 

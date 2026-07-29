@@ -47,8 +47,18 @@ _HTML_BLOCK_TAGS = frozenset({
 
 _CODE_SPAN_RE = re.compile(r'(`+)(.+?)\1')
 _ESCAPE_RE = re.compile(r'\\([\\`*_{}\[\]()#+.!>~|<>&-])')
-_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)')
-_LINK_RE = re.compile(r'\[([^\]]+)\]\(([^\s)]+)(?:\s+"([^"]*)")?\)')
+# A link/image destination normally can't contain a bare ")" (that's what
+# marks the end of the "(url)" part) - except CommonMark itself allows one
+# level of *balanced* parens inside the destination (e.g. the very common
+# Wikipedia-style "https://en.wikipedia.org/wiki/Foo_(bar)"), so this
+# matches either a run of non-space, non-paren characters, or a fully
+# self-contained "(...)" group with no spaces/parens inside it - repeated.
+# Without the second alternative, that Wikipedia URL's own closing ")"
+# would be mistaken for the *link's* closing ")", truncating the URL right
+# before "bar)" and leaving a stray, dangling ")" in the rendered output.
+_LINK_DEST = r'(?:[^\s()]|\([^\s()]*\))+'
+_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\((' + _LINK_DEST + r')(?:\s+"([^"]*)")?\)')
+_LINK_RE = re.compile(r'\[([^\]]+)\]\((' + _LINK_DEST + r')(?:\s+"([^"]*)")?\)')
 # Non-greedy up to the closing "&gt;": the text these run against has
 # already been through the whole-line html.escape() in step 3 of
 # _render_inline, so a literal "&" in the original URL (e.g. a query
@@ -74,6 +84,40 @@ _HARDBREAK_RE = re.compile(r'(?: {2,}|\\)\n')
 # "A & B" slugs to "a--b" (double hyphen, since removing "&" leaves two
 # spaces behind).
 _SLUG_STRIP_RE = re.compile(r'[^\w\s\-\uFE00-\uFE0F]', re.UNICODE)
+
+# Used only to build heading slugs: strip Markdown *syntax* (not just inline
+# code backticks) down to plain rendered text first, so a heading like
+# "## [Link Text](https://example.com) Heading" slugs to "link-text-heading"
+# - matching what GitHub's own slugger does with the *rendered* heading text
+# - instead of "link-texthttpsexamplecom-heading" (the link's URL, punched
+# straight through _SLUG_STRIP_RE's punctuation-stripping and fused onto the
+# label, since a raw, un-stripped "[Link Text](https://example.com)" has no
+# non-word characters removed from between the label and the URL other than
+# the brackets/parens themselves).
+_SLUG_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\([^)]*\)')
+_SLUG_LINK_RE = re.compile(r'\[([^\]]+)\]\([^)]*\)')
+
+# Schemes that a browser will treat as *executable* rather than merely
+# "fetch this resource" - "javascript:"/"vbscript:" run arbitrary script
+# directly, "data:" can smuggle a full HTML document (script and all) into
+# an <a href>, and "file:" can leak local filesystem contents. Rejected for
+# link hrefs; "data:" is left off the image list since data: *images*
+# (data:image/png;base64,...) are common and inert - browsers don't execute
+# script from an <img src>, even an SVG one.
+_DANGEROUS_LINK_SCHEMES = frozenset({"javascript", "vbscript", "data", "file"})
+_DANGEROUS_IMAGE_SCHEMES = frozenset({"javascript", "vbscript", "file"})
+_URL_SCHEME_RE = re.compile(r'^\s*([a-zA-Z][a-zA-Z0-9+.\-]*):')
+
+
+def _has_dangerous_scheme(url: str, dangerous_schemes: frozenset) -> bool:
+    """
+    True if `url` starts with one of `dangerous_schemes` (case-insensitively).
+    A URL with no scheme at all (a relative path, "#anchor", "//host/path",
+    etc.) is always safe by this check - only an explicit, *executable*
+    scheme is rejected.
+    """
+    m = _URL_SCHEME_RE.match(url)
+    return bool(m) and m.group(1).lower() in dangerous_schemes
 
 
 class MarkdownRenderer:
@@ -428,7 +472,21 @@ class MarkdownRenderer:
     # -- headings -------------------------------------------------------------
 
     def _slugify(self, text):
-        plain = re.sub(r'`([^`]*)`', r'\1', text)  # drop inline-code backticks
+        plain = _SLUG_IMAGE_RE.sub(r'\1', text)  # ![alt](url) -> alt
+        plain = _SLUG_LINK_RE.sub(r'\1', plain)  # [label](url) -> label
+        plain = re.sub(r'`([^`]*)`', r'\1', plain)  # drop inline-code backticks
+        # Unwrap emphasis/bold/strikethrough markers the same way - a heading
+        # like "## **Bold** Heading" should slug to "bold-heading", not carry
+        # literal asterisks through into "bold-heading" by accident of them
+        # already being non-word characters _SLUG_STRIP_RE strips anyway
+        # (harmless here), but this also correctly unwraps single-* / single-_
+        # italics and ~~strikethrough~~, which _SLUG_STRIP_RE alone cannot
+        # distinguish from ordinary stray punctuation.
+        plain = _BOLD_ITALIC_RE.sub(r'\2', plain)
+        plain = _BOLD_RE.sub(r'\2', plain)
+        plain = _ITALIC_STAR_RE.sub(r'\1', plain)
+        plain = _ITALIC_UNDER_RE.sub(r'\1', plain)
+        plain = _STRIKE_RE.sub(r'\1', plain)
         plain = plain.lower()
         plain = _SLUG_STRIP_RE.sub("", plain)
         # Every individual whitespace character becomes its own hyphen -
@@ -507,6 +565,12 @@ class MarkdownRenderer:
         # 4. images
         def _image(m):
             alt, url, title = m.group(1), m.group(2), m.group(3)
+            if _has_dangerous_scheme(url, _DANGEROUS_IMAGE_SCHEMES):
+                # Don't emit an <img> pointing at a script-executing/local-
+                # file URL scheme - fall back to just the (already-escaped)
+                # alt text, the same way a browser shows alt text for any
+                # image it couldn't load.
+                return self._stash(alt)
             # alt/url/title were captured from text already run through
             # html.escape(..., quote=False) in step 3 above - only quotes
             # need escaping here, not the whole fragment again.
@@ -533,6 +597,11 @@ class MarkdownRenderer:
             # placeholder token. Without this, "[**bold link**](url)" would
             # render literal "**" asterisks instead of <strong> markup.
             label = self._apply_emphasis(label)
+            if _has_dangerous_scheme(url, _DANGEROUS_LINK_SCHEMES):
+                # Don't linkify a script-executing/document-smuggling/local-
+                # file URL scheme - render the (already emphasis-processed)
+                # label as plain text instead of wrapping it in an <a>.
+                return self._stash(label)
             title_attr = ' title="{}"'.format(self._escape_attr_quotes(title)) if title else ""
             return self._stash('<a href="{}"{}>{}</a>'.format(self._escape_attr_quotes(url), title_attr, label))
 

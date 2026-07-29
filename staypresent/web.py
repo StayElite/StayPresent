@@ -157,7 +157,11 @@ def json(data: Any, path: str = "/") -> None:
 
 # Directories we've already warned about, so a bot that calls html()/
 # markdown() repeatedly against the same directory (e.g. re-registering a
-# route to refresh it) doesn't spam the log every time.
+# route to refresh it) doesn't spam the log every time. Guarded by the same
+# `_lock` as `_routes` (not a lock of its own) - simplest way to keep this
+# consistent with the rest of this module's shared state, and calls into
+# `html()`/`markdown()` are infrequent registration-time operations, not a
+# contention hot path.
 _warned_directories = set()
 
 
@@ -173,9 +177,10 @@ def _warn_serves_whole_directory(file_path: str) -> None:
     file sitting in the same directory would be silently downloadable.
     """
     directory = os.path.dirname(os.path.abspath(file_path))
-    if directory in _warned_directories:
-        return
-    _warned_directories.add(directory)
+    with _lock:
+        if directory in _warned_directories:
+            return
+        _warned_directories.add(directory)
     logger.warning(
         "staypresent.web: every file inside '%s' is now servable to anyone who requests "
         "it by name (not just files linked from '%s') - this is how relative CSS/JS/image "

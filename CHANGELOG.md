@@ -1,5 +1,23 @@
 # StayPresent — Changelog
 
+## 1.5.10
+
+### Fixed
+
+* **A crash-triggered bot restart could hang graceful shutdown indefinitely.** The restart backoff used an uninterruptible `time.sleep()`, so a `Ctrl+C`/`SIGTERM` arriving during that window went unnoticed until the full delay elapsed - and because bot-monitor threads are non-daemon, the process wouldn't actually exit until that new, untracked process (spawned *after* shutdown had already terminated everything it knew about) finished running, which for a long-lived bot could mean never. The backoff now uses an interruptible wait that returns immediately once shutdown begins, and the respawn itself is synchronized with shutdown's own process cleanup so a restart can never slip through as an orphaned, never-terminated process.
+
+* **Markdown heading anchors were broken for headings containing a link, image, or emphasis.** A heading like `## [Link Text](url) Heading` produced a slug that fused the link's URL into the anchor id (e.g. `link-texthttpsexamplecom-heading`) instead of anchoring on the heading's rendered text. Slug generation now strips Markdown syntax down to plain text first (links/images reduce to their label/alt text, emphasis markers unwrap) the same way it already did for inline code, so anchors match what GitHub itself would generate.
+
+* **Markdown links/images could point at script-executing or local-file URL schemes.** `[click me](javascript:alert(1))` rendered a working, clickable `javascript:` link with no sanitization at all. `javascript:`/`vbscript:`/`file:` URLs (and `data:` for links specifically, which can smuggle a full HTML document into a click) are now rejected during rendering and fall back to plain text instead of an active link/image; ordinary `http(s)`, relative, and anchor URLs are unaffected, and `data:` images (a common, inert way to embed small icons) are still allowed.
+
+* **Link/image URLs containing a parenthesis were silently truncated.** A destination like the very common Wikipedia-style `https://en.wikipedia.org/wiki/Foo_(bar)` got cut off at `Foo_(bar` mid-word, leaving a stray `)` in the rendered output, because the URL pattern stopped at the very first `)` it saw. The destination pattern now allows one level of balanced parens inside the URL, matching CommonMark's own handling of this case.
+
+* **`staypresent.web`'s one-time "serves the whole directory" warning wasn't thread-safe.** The set tracking which directories had already been warned about was mutated without holding any lock, unlike every other piece of shared state in that module - two threads registering `html()`/`markdown()` for the same new directory at the same moment could both lose the race and each log the warning. It's now guarded by the same lock as everything else in the module.
+
+* **A query string was silently dropped when redirecting a bare `html()`/`markdown()` path to its trailing-slash form.** Requesting `/dashboard?tab=2` before the trailing slash existed redirected to `/dashboard/`, discarding `?tab=2`. The redirect now carries the original query string through.
+
+---
+
 ## 1.5.9
 
 ### Fixed
