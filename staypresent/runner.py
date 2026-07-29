@@ -427,17 +427,18 @@ def run(
     """
 
     global _run_called
-    with _run_lock:
-        if _run_called:
-            raise RuntimeError(
-                "staypresent.run() was already called once in this process. It uses a "
-                "single shared, module-level web server, so calling it again would just "
-                "try to bind the same host:port a second time and fail with a generic "
-                "'address already in use' error. If you meant to run multiple bots, pass "
-                "them all to a single run() call instead (bot_file=['a.py', 'b.py'], or "
-                "bots=[{'file': 'a.py'}, {'file': 'b.py'}])."
-            )
-        _run_called = True
+    # Peek (without claiming) so a second call fails fast with the real
+    # "already called" error rather than that error being masked by
+    # whatever validation error happens to run first below.
+    if _run_called:
+        raise RuntimeError(
+            "staypresent.run() was already called once in this process. It uses a "
+            "single shared, module-level web server, so calling it again would just "
+            "try to bind the same host:port a second time and fail with a generic "
+            "'address already in use' error. If you meant to run multiple bots, pass "
+            "them all to a single run() call instead (bot_file=['a.py', 'b.py'], or "
+            "bots=[{'file': 'a.py'}, {'file': 'b.py'}])."
+        )
 
     bot_configs = _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots)
 
@@ -463,6 +464,27 @@ def run(
         raise ValueError(
             f"staypresent.run(): restart_reset_after must be >= 0, got {restart_reset_after}."
         )
+
+    # Only now - once every validation above has actually passed and we're
+    # committed to starting the shared server - claim the "already called"
+    # slot. Claiming it any earlier (e.g. before validation, as before) meant
+    # a first call that failed validation (bad port, missing bot file, ...)
+    # never started a server at all, yet permanently blocked every
+    # subsequent, otherwise-valid call in the same process behind the
+    # "already called" error above, masking the real (validation) error on
+    # the very next attempt. The lock still makes the check-and-set atomic
+    # against a genuinely concurrent second call reaching this point.
+    with _run_lock:
+        if _run_called:
+            raise RuntimeError(
+                "staypresent.run() was already called once in this process. It uses a "
+                "single shared, module-level web server, so calling it again would just "
+                "try to bind the same host:port a second time and fail with a generic "
+                "'address already in use' error. If you meant to run multiple bots, pass "
+                "them all to a single run() call instead (bot_file=['a.py', 'b.py'], or "
+                "bots=[{'file': 'a.py'}, {'file': 'b.py'}])."
+            )
+        _run_called = True
 
     started_event = threading.Event()
     error_holder = []
@@ -552,13 +574,27 @@ def run(
         # signal.SIG_DFL/signal.SIG_IGN (not callables) when nothing custom
         # was previously installed - only call through for an actual
         # callable.
+        #
+        # signal.default_int_handler is *not* a "host script installed
+        # this" handler - it's the interpreter's own baseline SIGINT
+        # handler (the thing that normally turns Ctrl+C into a
+        # KeyboardInterrupt), present by default in every process that
+        # hasn't touched SIGINT itself. That's true for the overwhelming
+        # majority of scripts calling run(). Chaining to it would raise
+        # KeyboardInterrupt right here - a BaseException, not an Exception,
+        # so it would skip both `except` clauses below, skip our own
+        # `sys.exit(0)`, and blow up whatever thread was interrupted with a
+        # raw traceback instead of the graceful shutdown this handler
+        # exists to provide. So it's deliberately skipped rather than
+        # called through.
         prev = previous_handlers.get(signum)
-        if callable(prev):
+        if callable(prev) and prev is not signal.default_int_handler:
             try:
                 prev(signum, frame)
             except SystemExit:
                 raise
-            except Exception:  # noqa: BLE001 - a bad chained handler must not block our own exit
+            except BaseException:  # noqa: BLE001 - a bad chained handler (even one raising
+                # KeyboardInterrupt/another BaseException) must not block our own exit
                 logger.exception("Previously-installed %s handler raised an exception.", sig_name)
 
         sys.exit(0)

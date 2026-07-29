@@ -98,6 +98,16 @@ class MarkdownRenderer:
             return False
         return m.group(1).lower() in _HTML_BLOCK_TAGS
 
+    def _is_table_start(self, lines, i: int) -> bool:
+        """True if lines[i] is a table header row (the same condition the
+        top-level table branch below uses): a "|" on this line followed
+        immediately by a delimiter row on the next line."""
+        return (
+            "|" in lines[i]
+            and i + 1 < len(lines)
+            and _TABLE_SEP_RE.match(lines[i + 1])
+        )
+
     def _is_block_start(self, line: str) -> bool:
         return bool(
             _ATX_HEADING_RE.match(line)
@@ -158,23 +168,6 @@ class MarkdownRenderer:
                 i += 1
                 continue
 
-            # --- setext heading (Text\n=== or Text\n---) ---
-            if (
-                line.strip()
-                and not _UL_RE.match(line)
-                and not _OL_RE.match(line)
-                and not _BLOCKQUOTE_RE.match(line)
-                and i + 1 < n
-            ):
-                if _SETEXT_H1_RE.match(lines[i + 1]):
-                    out.append(self._render_heading(1, line.strip()))
-                    i += 2
-                    continue
-                if _SETEXT_H2_RE.match(lines[i + 1]):
-                    out.append(self._render_heading(2, line.strip()))
-                    i += 2
-                    continue
-
             # --- thematic break ---
             if _HR_RE.match(line):
                 out.append("<hr>")
@@ -228,10 +221,22 @@ class MarkdownRenderer:
                 marker_re = _OL_RE if ordered else _UL_RE
                 list_lines = []
                 while i < n:
+                    # A nested list of the *other* marker type (e.g. a
+                    # numbered sub-list under a bullet item) is still valid
+                    # continuation content for the current item, not a
+                    # reason to end this list - only a genuinely unrelated
+                    # block start (a heading, blockquote, HTML block, ...)
+                    # should do that. _is_block_start() alone can't tell
+                    # the two apart, since it matches UL_RE/OL_RE for *any*
+                    # list marker; an explicit opposite-type-marker check
+                    # overrides it here.
+                    is_nested_other_list_marker = bool(
+                        (_OL_RE if not ordered else _UL_RE).match(lines[i])
+                    )
                     if marker_re.match(lines[i]) or (
                         list_lines
                         and (lines[i].startswith(" ") or lines[i].startswith("\t") or not lines[i].strip())
-                        and not self._is_block_start(lines[i])
+                        and (is_nested_other_list_marker or not self._is_block_start(lines[i]))
                     ):
                         list_lines.append(lines[i])
                         i += 1
@@ -242,14 +247,42 @@ class MarkdownRenderer:
                 out.append(self._render_list(list_lines, ordered))
                 continue
 
-            # --- paragraph ---
+            # --- paragraph (a trailing "==="/"---" underline converts the
+            # whole run collected so far into a setext heading instead of
+            # literal paragraph text - checked before _is_block_start() so
+            # a "---" underline isn't instead swallowed as an unrelated
+            # thematic break) ---
             para_lines = [line]
             i += 1
-            while i < n and lines[i].strip() and not self._is_block_start(lines[i]):
-                if i + 1 < n and (_SETEXT_H1_RE.match(lines[i]) or _SETEXT_H2_RE.match(lines[i])):
+            while i < n and lines[i].strip():
+                if _SETEXT_H1_RE.match(lines[i]) or _SETEXT_H2_RE.match(lines[i]):
+                    break
+                if self._is_block_start(lines[i]):
+                    break
+                # A table header row directly following paragraph text (no
+                # blank line) still starts its own table block, matching
+                # GFM - it isn't covered by _is_block_start() above, whose
+                # checks are all single-line and can't see the delimiter
+                # row on the *next* line that's what actually makes this a
+                # table. Without this, `intro line\n| a | b |\n|---|---|`
+                # got swallowed whole as literal paragraph text instead of
+                # rendering a table, since the table branch above only
+                # triggers when a table is the very first thing at the top
+                # of the block loop.
+                if self._is_table_start(lines, i):
                     break
                 para_lines.append(lines[i])
                 i += 1
+
+            if i < n and _SETEXT_H1_RE.match(lines[i]):
+                out.append(self._render_heading(1, "\n".join(para_lines).strip()))
+                i += 1
+                continue
+            if i < n and _SETEXT_H2_RE.match(lines[i]):
+                out.append(self._render_heading(2, "\n".join(para_lines).strip()))
+                i += 1
+                continue
+
             joined = "\n".join(para_lines)
             out.append("<p>{}</p>".format(self._render_inline(joined)))
 
@@ -262,6 +295,7 @@ class MarkdownRenderer:
         items = []  # list of (indent, [content_lines])
         i, n = 0, len(lines)
 
+        start_number = None
         while i < n:
             line = lines[i]
             m = marker_re.match(line)
@@ -270,6 +304,12 @@ class MarkdownRenderer:
                     items[-1][1].append(line)
                 i += 1
                 continue
+            if ordered and start_number is None:
+                # Only the very first item's number matters for numbering -
+                # HTML's <ol start> sets where the list *begins*; every
+                # subsequent <li> simply increments from there regardless
+                # of what number the author wrote next to it.
+                start_number = int(m.group(2))
             indent = len(m.group(1))
             content = m.group(3)
             prefix_len = len(m.group(0)) - len(content)
@@ -291,23 +331,50 @@ class MarkdownRenderer:
                 break
             items.append((indent, item_lines))
 
+        # A list is "loose" (GFM/CommonMark terminology) - every item's text
+        # wrapped in <p> - as soon as *any* item is separated from another
+        # by a blank line, not just the item(s) directly touching that
+        # blank line.
+        list_is_loose = any(any(not l.strip() for l in item_lines) for _, item_lines in items)
+
         tag = "ol" if ordered else "ul"
-        parts = ["<{}>".format(tag)]
+        start_attr = " start=\"{}\"".format(start_number) if ordered and start_number not in (None, 1) else ""
+        parts = ["<{}{}>".format(tag, start_attr)]
         for _, item_lines in items:
-            parts.append("<li>{}</li>".format(self._render_list_item(item_lines)))
+            parts.append("<li>{}</li>".format(self._render_list_item(item_lines, list_is_loose)))
         parts.append("</{}>".format(tag))
         return "\n".join(parts)
 
-    def _render_list_item(self, item_lines):
+    def _render_list_item(self, item_lines, list_is_loose=False):
         while item_lines and not item_lines[0].strip():
             item_lines = item_lines[1:]
         while item_lines and not item_lines[-1].strip():
             item_lines = item_lines[:-1]
+        if not item_lines:
+            return ""
+
         text = "\n".join(item_lines)
-        has_blank = any(not l.strip() for l in item_lines)
-        starts_nested_list = bool(item_lines) and (_UL_RE.match(item_lines[0]) or _OL_RE.match(item_lines[0]))
-        if not has_blank and not starts_nested_list and "\n" not in text.strip("\n"):
+        starts_nested_list = bool(_UL_RE.match(item_lines[0]) or _OL_RE.match(item_lines[0]))
+        if not list_is_loose and not starts_nested_list and "\n" not in text.strip("\n"):
             return self._render_inline(text)
+
+        if not list_is_loose and not starts_nested_list:
+            # Split off this item's own leading paragraph text from a
+            # nested sub-list that follows it directly (no blank line) -
+            # rendering just that leading run inline (no <p>) keeps a tight
+            # item like "item 2\n  - nested" from picking up an unwanted
+            # <p> around "item 2" purely because render_blocks() below
+            # would otherwise treat the whole thing as block-level content.
+            split_at = next(
+                (idx for idx in range(1, len(item_lines))
+                 if _UL_RE.match(item_lines[idx]) or _OL_RE.match(item_lines[idx])),
+                None,
+            )
+            if split_at is not None:
+                leading = "\n".join(item_lines[:split_at])
+                rest = self._render_blocks(item_lines[split_at:])
+                return "{}\n{}".format(self._render_inline(leading), rest)
+
         return self._render_blocks(item_lines)
 
     # -- tables -------------------------------------------------------------
