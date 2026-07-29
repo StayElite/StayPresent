@@ -19,7 +19,7 @@ A lightweight Python package that keeps your bots and background scripts alive b
 
 Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **Heroku**, or any host that requires an active HTTP port to keep your service running.
 
-📖 **This README covers the essentials.** For the full guide — every parameter, every `staypresent.web` option, deployment notes, and a detailed FAQ — see **[DOCUMENTATION.md](DOCUMENTATION.md)**. Release notes live in **[CHANGELOG.md](CHANGELOG.md)**.
+📖 **This README covers the essentials.** For the full guide — every parameter, every `staypresent.web` option, deployment notes, and a detailed FAQ — see **[DOCUMENTATION.md](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md)**. Release notes live in **[CHANGELOG.md](https://github.com/StayElite/StayPresent/blob/main/CHANGELOG.md)**.
 
 ---
 
@@ -37,7 +37,7 @@ Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **He
 * **Static Asset Serving:** CSS, JS, images, and favicons next to your HTML/Markdown files are served automatically.
 * **Optional Self-Ping / Keep-Warm:** Periodically ping your own public URL to stop free-tier hosts spinning your service down — off by default.
 
-See **[DOCUMENTATION.md](DOCUMENTATION.md)** for the full feature list, including advanced process control and fail-safe logging.
+See **[DOCUMENTATION.md](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md)** for the full feature list, including advanced process control and fail-safe logging.
 
 ---
 
@@ -81,7 +81,7 @@ staypresent.run(
 )
 ```
 
-Every `staypresent.web` function (`text`, `json`, `html`, `markdown`) accepts a `path=` argument, so you can host several independent responses — e.g. a JSON status at `/`, a dashboard at `/dashboard`, a changelog at `/changelog` — all from the same server. See **[Custom Paths & Multiple Responses](DOCUMENTATION.md#35-custom-paths--multiple-responses)** for the details.
+Every `staypresent.web` function (`text`, `json`, `html`, `markdown`) accepts a `path=` argument, so you can host several independent responses — e.g. a JSON status at `/`, a dashboard at `/dashboard`, a changelog at `/changelog` — all from the same server. See **[Custom Paths & Multiple Responses](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#35-custom-paths--multiple-responses)** for the details.
 
 ---
 
@@ -93,7 +93,7 @@ import staypresent
 staypresent.run(["telegram_bot.py", "discord_bot.py"])
 ```
 
-Each bot is supervised and restarted independently. For per-bot arguments/environment, or for a bot that needs `python -m` (package-relative imports), use `bots=[...]` / `bot_module=...` — see **[Process Execution](DOCUMENTATION.md#4-process-execution-staypresentrun)** for the full reference.
+Each bot is supervised and restarted independently. For per-bot arguments/environment, or for a bot that needs `python -m` (package-relative imports), use `bots=[...]` / `bot_module=...` — see **[Process Execution](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#4-process-execution-staypresentrun)** for the full reference.
 
 ---
 
@@ -106,7 +106,7 @@ handle = staypresent.cron("https://my-bot.onrender.com", interval=300)  # every 
 staypresent.run("bot.py")
 ```
 
-Fully optional, off by default. See **[Self-Ping / Keep-Warm](DOCUMENTATION.md#5-self-ping--keep-warm-staypresentping--staypresentcron)**.
+Fully optional, off by default. See **[Self-Ping / Keep-Warm](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#5-self-ping--keep-warm-staypresentping--staypresentcron)**.
 
 ---
 
@@ -121,9 +121,9 @@ Fully optional, off by default. See **[Self-Ping / Keep-Warm](DOCUMENTATION.md#5
 | `staypresent.cron(host, ...)` | Start a recurring background ping (`CronHandle`). |
 | `staypresent.active_cron_handles()` | List every currently-running cron pinger. |
 
-Every parameter, default, and validation rule is documented in full in **[API Reference](DOCUMENTATION.md#8-api-reference)** of DOCUMENTATION.md, along with **[Process Execution](DOCUMENTATION.md#4-process-execution-staypresentrun)** (crash recovery, multi-bot, `bot_module`) and **[Web Server Configuration](DOCUMENTATION.md#3-web-server-configuration-staypresentweb)** (all response types, theming, static assets).
+Every parameter, default, and validation rule is documented in full in **[API Reference](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#8-api-reference)** of DOCUMENTATION.md, along with **[Process Execution](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#4-process-execution-staypresentrun)** (crash recovery, multi-bot, `bot_module`) and **[Web Server Configuration](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#3-web-server-configuration-staypresentweb)** (all response types, theming, static assets).
 
-A built-in `/health` endpoint (`{"status": "ok"}`) is available out of the box for uptime monitors — see **[Built-in Health Check](DOCUMENTATION.md#6-built-in-health-check)**.
+A built-in `/health` endpoint (`{"status": "ok"}`) is available out of the box for uptime monitors — see **[Built-in Health Check](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#6-built-in-health-check)**.
 
 ---
 
@@ -146,4 +146,4 @@ Markdown rendering, theming, and tables work with **no additional dependencies**
 
 ---
 
-📖 For everything else — full parameter tables, deployment notes, and an FAQ covering restarts, path collisions, `bot_module`, and more — see **[DOCUMENTATION.md](DOCUMENTATION.md)**.
+📖 For everything else — full parameter tables, deployment notes, and an FAQ covering restarts, path collisions, `bot_module`, and more — see **[DOCUMENTATION.md](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md)**.

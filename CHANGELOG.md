@@ -1,5 +1,13 @@
 # StayPresent — Changelog
 
+## 1.5.11
+
+### Fixed
+
+* **Fixed documentation links on the PyPI project page.** Replaced relative README links with absolute GitHub URLs, ensuring documentation links render and open correctly on PyPI while remaining fully functional on GitHub.
+
+---
+
 ## 1.5.10
 
 ### Fixed
