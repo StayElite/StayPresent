@@ -1,3 +1,19 @@
+"""
+StayPresent - Process Runner
+
+Launches and supervises one or more bot processes alongside the web
+server: crash detection, auto-restart with backoff, multi-bot
+labeling, and graceful SIGINT/SIGTERM shutdown (with signal-handler
+chaining so a host script's own handler still runs).
+
+Part of the StayPresent project.
+Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
+"""
+
+# Created and maintained by Ashish Sharma (Stay Elite).
+# Copyright (c) 2026 Ashish Sharma (Stay Elite)
+# Licensed under the MIT License. See the LICENSE file for details.
+
 import subprocess
 import threading
 import logging

@@ -1,6 +1,17 @@
 """
-CSS stylesheet used to style StayPresent's Markdown-rendered HTML output.
+StayPresent Markdown Stylesheet
+
+The GitHub-flavored CSS injected into every page rendered by
+staypresent.web.markdown(), with automatic light/dark support via
+prefers-color-scheme.
+
+Part of the StayPresent project.
+Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
 """
+
+# Created and maintained by Ashish Sharma (Stay Elite).
+# Copyright (c) 2026 Ashish Sharma (Stay Elite)
+# Licensed under the MIT License. See the LICENSE file for details.
 
 STAYPRESENT_MARKDOWN_CSS = r'''
 /*

@@ -1,3 +1,18 @@
+"""
+StayPresent - Ping / Keep-Warm
+
+staypresent.ping() for one-off HTTP health checks, and staypresent.cron()
+for a recurring background pinger that keeps a free-tier host from
+spinning your service down due to inactivity.
+
+Part of the StayPresent project.
+Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
+"""
+
+# Created and maintained by Ashish Sharma (Stay Elite).
+# Copyright (c) 2026 Ashish Sharma (Stay Elite)
+# Licensed under the MIT License. See the LICENSE file for details.
+
 import logging
 import threading
 import time

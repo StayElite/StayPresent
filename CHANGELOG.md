@@ -1,5 +1,23 @@
 # StayPresent — Changelog
 
+## 1.5.14
+
+### Documentation
+
+* **Clarified the renderer's "what it intentionally does not do" section.** A further adversarial audit this round (emphasis-nesting ambiguity, ATX heading edge cases, table cell/column mismatches, indented-code-vs-list interaction, favicon URL handling, fence `lang` HTML-escaping) found no additional bugs, but did surface two real, previously-undocumented gaps: reference-style links/images (`[text][ref]` + a separate `[ref]: url` definition) aren't supported, only the inline `[text](url)` form; and a blockquote paragraph line that omits its leading `>` ends the blockquote there instead of continuing it (CommonMark's own "lazy continuation" is more permissive). Both are now listed explicitly alongside the renderer's other documented limitations, rather than being an undocumented surprise.
+
+---
+
+## 1.5.13
+
+### Fixed
+
+* **A fenced code block's info string broke the fence entirely if it had anything beyond a single bare language word.** `` ```python title="app.py" `` or `` ```js {linenos=true} `` (common ways to tag a fence with a filename or highlighting options alongside the language) fell straight through to paragraph parsing instead of opening a code block, garbling the output, because the fence pattern required the *entire* rest of the line to be just one token. Per CommonMark/GitHub, the info string is the whole rest of the line - only its first word is used as the language class. The fence pattern now captures that first word and tolerates (ignoring) anything after it.
+
+* **A fenced code block, blockquote, or heading nested inside a list item broke the list apart into disconnected sibling blocks instead of nesting inside its `<li>`.** `1. Run this:\n   ` + "```" + `bash\n   npm install\n   ` + "```" + `\n2. Next step` - an extremely common step-by-step-instructions pattern - rendered the code fence as a separate top-level `<pre>` after a truncated `<ol>`, rather than nested inside the first step. The block-level list collector stopped gathering lines the moment it saw something matching *any* recognized block-start pattern, without regard for whether that line was actually indented under the current item; nested lists of the other marker type got a narrow, explicit exception for this in 1.5.9, but fenced code, blockquotes, and headings did not. The collector no longer pre-judges nested content by block type at all - any indented line is gathered as a candidate, and `_render_list()`'s own existing indentation comparison (unchanged) is what actually decides how much of it belongs to which item.
+
+---
+
 ## 1.5.12
 
 ### Improved

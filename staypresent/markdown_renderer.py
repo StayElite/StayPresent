@@ -1,6 +1,18 @@
 """
-StayPresent Markdown-to-HTML Renderer.
+StayPresent Markdown Renderer
+
+A fast, dependency-free Markdown-to-HTML renderer used by
+staypresent.web.markdown() - headings, emphasis, links, images,
+lists, tables, code fences, blockquotes, and raw HTML passthrough,
+with GitHub-style heading slugs.
+
+Part of the StayPresent project.
+Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
 """
+
+# Created and maintained by Ashish Sharma (Stay Elite).
+# Copyright (c) 2026 Ashish Sharma (Stay Elite)
+# Licensed under the MIT License. See the LICENSE file for details.
 
 import html
 import re
@@ -15,7 +27,7 @@ _ATX_HEADING_RE = re.compile(r'^ {0,3}(#{1,6})(?:\s+(.*?))?\s*#*\s*$')
 _SETEXT_H1_RE = re.compile(r'^ {0,3}=+\s*$')
 _SETEXT_H2_RE = re.compile(r'^ {0,3}-+\s*$')
 _HR_RE = re.compile(r'^ {0,3}((-[ \t]*){3,}|(\*[ \t]*){3,}|(_[ \t]*){3,})$')
-_FENCE_RE = re.compile(r'^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`~]*)[ \t]*$')
+_FENCE_RE = re.compile(r'^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`~]*)(?:[ \t].*)?$')
 _BLOCKQUOTE_RE = re.compile(r'^ {0,3}>[ ]?(.*)$')
 _UL_RE = re.compile(r'^( *)([-*+])[ \t]+(.*)$')
 _OL_RE = re.compile(r'^( *)(\d{1,9})[.)][ \t]+(.*)$')
@@ -271,22 +283,26 @@ class StayPresentMarkdownRenderer:
                 marker_re = _OL_RE if ordered else _UL_RE
                 list_lines = []
                 while i < n:
-                    # A nested list of the *other* marker type (e.g. a
-                    # numbered sub-list under a bullet item) is still valid
-                    # continuation content for the current item, not a
-                    # reason to end this list - only a genuinely unrelated
-                    # block start (a heading, blockquote, HTML block, ...)
-                    # should do that. _is_block_start() alone can't tell
-                    # the two apart, since it matches UL_RE/OL_RE for *any*
-                    # list marker; an explicit opposite-type-marker check
-                    # overrides it here.
-                    is_nested_other_list_marker = bool(
-                        (_OL_RE if not ordered else _UL_RE).match(lines[i])
-                    )
+                    # Any indented line is potentially nested content
+                    # belonging to the current list item - a fenced code
+                    # block, a blockquote, a heading, or a sub-list of
+                    # either marker type (e.g. "1. Run this:\n   ```bash\n
+                    # ...\n   ```\n2. Next step", a very common
+                    # step-by-step-instructions pattern). Whether it's
+                    # actually indented *enough* to belong to the item (vs.
+                    # a fresh, unrelated top-level block) is exactly what
+                    # _render_list()'s own per-item indentation comparison
+                    # below decides - this collection pass only needs to
+                    # gather candidate lines, not pre-judge them by
+                    # pattern-matching what kind of block they look like.
+                    # Using _is_block_start() to end the list here (as this
+                    # used to) meant *any* recognized block-start pattern -
+                    # not just an unindented, genuinely new one - ended the
+                    # list immediately, breaking every one of those nested
+                    # cases apart into disconnected sibling blocks.
                     if marker_re.match(lines[i]) or (
                         list_lines
                         and (lines[i].startswith(" ") or lines[i].startswith("\t") or not lines[i].strip())
-                        and (is_nested_other_list_marker or not self._is_block_start(lines[i]))
                     ):
                         list_lines.append(lines[i])
                         i += 1

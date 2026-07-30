@@ -1,3 +1,19 @@
+"""
+StayPresent - Flask Server
+
+The shared Flask app StayPresent runs in the background: serves
+whatever's registered via staypresent.web, renders HTML/Markdown
+files fresh on every request, serves neighboring static assets, and
+falls back to a built-in "/health" endpoint.
+
+Part of the StayPresent project.
+Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
+"""
+
+# Created and maintained by Ashish Sharma (Stay Elite).
+# Copyright (c) 2026 Ashish Sharma (Stay Elite)
+# Licensed under the MIT License. See the LICENSE file for details.
+
 import html as _html_escape
 import logging
 import os

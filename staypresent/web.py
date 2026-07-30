@@ -1,3 +1,18 @@
+"""
+StayPresent - Web Response Registry
+
+Lets a bot register what the web server should return, and at which
+path: plain text, JSON, static HTML, or rendered Markdown. Supports
+hosting multiple independent responses at once (e.g. one per bot).
+
+Part of the StayPresent project.
+Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
+"""
+
+# Created and maintained by Ashish Sharma (Stay Elite).
+# Copyright (c) 2026 Ashish Sharma (Stay Elite)
+# Licensed under the MIT License. See the LICENSE file for details.
+
 import copy
 import json as _json
 import logging
