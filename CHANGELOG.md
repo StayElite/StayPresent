@@ -1,5 +1,15 @@
 # StayPresent — Changelog
 
+## 1.5.12
+
+### Improved
+
+* **The built-in Markdown renderer now renders GitHub-Flavored-Markdown task lists.** `- [ ] todo` / `- [x] done` previously rendered as literal `[ ]`/`[x]` text; each now renders as a disabled checkbox (`<input type="checkbox" disabled>`, checked for `[x]`/`[X]`) with a `task-list-item` class on its `<li>`, matching GitHub's own rendering (including no bullet marker on task items) - complete with nested/ordered-list task items and full inline formatting (bold, links, code, etc.) inside the item text. Only fires on an item's own leading `[ ]`/`[x]` (mirroring GFM's own rule that it must be immediately followed by whitespace) - `[ ]` appearing mid-sentence is left as plain text, unaffected.
+
+* A thorough re-audit of the full codebase (`pinger.py`, `runner.py`, `server.py`, `web.py`, `markdown_renderer.py`) turned up no further correctness bugs beyond what 1.5.7-1.5.11 already addressed - signal handling, list nesting/looseness, setext headings, table detection, URL-scheme sanitization, and balanced-paren URLs were all re-verified against a broad set of hand-built and adversarial inputs (mixed nested lists, loose/tight items, dangerous URL schemes including whitespace/case obfuscation attempts, doubly-nested parens, multi-line setext headings, table-after-paragraph, signal chaining with/without a host-installed handler) with no regressions or new failures found.
+
+---
+
 ## 1.5.11
 
 ### Fixed

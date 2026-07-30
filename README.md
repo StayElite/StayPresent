@@ -31,7 +31,7 @@ Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **He
 * **Package-Aware Bot Launching:** Launch a bot that lives inside a package (and needs relative imports) as a proper module via `bot_module`.
 * **Auto-Restarts & Crash Recovery:** Automatically respawns a crashed bot process, with configurable delay and consecutive-crash budget, per bot.
 * **Flexible Responses:** Serve plain text, JSON (default), full HTML templates, or rendered Markdown.
-* **Built-in Markdown Renderer — Zero Extra Dependencies:** Headings, emphasis, links, images, nested lists, tables, code blocks, raw HTML passthrough, and a GitHub-flavored stylesheet, with no `markdown` package required.
+* **Built-in Markdown Renderer — Zero Extra Dependencies:** Headings, emphasis, links, images, nested lists (including task-list checkboxes), tables, code blocks, raw HTML passthrough, and a GitHub-flavored stylesheet, with no `markdown` package required.
 * **Light / Dark / Auto Theming:** Markdown pages can follow the visitor's OS preference or be forced to `light`/`dark`.
 * **Custom Paths, Multiple Responses:** Host more than one response at once, at different paths (e.g. `/`, `/status`, `/dashboard`).
 * **Static Asset Serving:** CSS, JS, images, and favicons next to your HTML/Markdown files are served automatically.

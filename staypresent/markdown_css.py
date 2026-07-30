@@ -216,6 +216,15 @@ STAYPRESENT_MARKDOWN_CSS = r'''
   margin-top: 0.25em;
 }
 
+.markdown-body .task-list-item {
+  list-style-type: none;
+}
+
+.markdown-body .task-list-item input[type="checkbox"] {
+  margin: 0 0.35em 0.25em -1.6em;
+  vertical-align: middle;
+}
+
 .markdown-body dl dt {
   margin-top: 16px;
   font-size: 1em;

@@ -5,7 +5,7 @@ StayPresent Markdown-to-HTML Renderer.
 import html
 import re
 
-__all__ = ["render", "MarkdownRenderer"]
+__all__ = ["render", "StayPresentMarkdownRenderer"]
 
 # ---------------------------------------------------------------------------
 # Block-level patterns
@@ -19,6 +19,12 @@ _FENCE_RE = re.compile(r'^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`~]*)[ \t]*$')
 _BLOCKQUOTE_RE = re.compile(r'^ {0,3}>[ ]?(.*)$')
 _UL_RE = re.compile(r'^( *)([-*+])[ \t]+(.*)$')
 _OL_RE = re.compile(r'^( *)(\d{1,9})[.)][ \t]+(.*)$')
+# GitHub-Flavored-Markdown task list items: "- [ ] todo" / "- [x] done" (case-
+# insensitive "x"). Matched against a list item's own first content line
+# (after its "-"/"*"/"1." marker has already been stripped), so this only
+# ever fires on the very start of an item, matching GitHub's own behavior -
+# "- [ ]" mid-sentence isn't a checkbox.
+_TASK_ITEM_RE = re.compile(r'^\[([ xX])\](?:\s+(.*)|$)')
 _TABLE_SEP_RE = re.compile(r'^ {0,3}\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$')
 _INDENTED_CODE_RE = re.compile(r'^(?: {4}|\t)(.*)$')
 
@@ -120,7 +126,7 @@ def _has_dangerous_scheme(url: str, dangerous_schemes: frozenset) -> bool:
     return bool(m) and m.group(1).lower() in dangerous_schemes
 
 
-class MarkdownRenderer:
+class StayPresentMarkdownRenderer:
     """Stateful renderer (tracks heading-id uniqueness across one document)."""
 
     def __init__(self):
@@ -385,7 +391,18 @@ class MarkdownRenderer:
         start_attr = " start=\"{}\"".format(start_number) if ordered and start_number not in (None, 1) else ""
         parts = ["<{}{}>".format(tag, start_attr)]
         for _, item_lines in items:
-            parts.append("<li>{}</li>".format(self._render_list_item(item_lines, list_is_loose)))
+            task_match = _TASK_ITEM_RE.match(item_lines[0]) if item_lines else None
+            if task_match is not None:
+                checked = task_match.group(1).lower() == "x"
+                item_lines = [task_match.group(2) or ""] + item_lines[1:]
+                checkbox = '<input type="checkbox" checked disabled> ' if checked else '<input type="checkbox" disabled> '
+                parts.append(
+                    '<li class="task-list-item">{}{}</li>'.format(
+                        checkbox, self._render_list_item(item_lines, list_is_loose)
+                    )
+                )
+            else:
+                parts.append("<li>{}</li>".format(self._render_list_item(item_lines, list_is_loose)))
         parts.append("</{}>".format(tag))
         return "\n".join(parts)
 
@@ -644,4 +661,4 @@ class MarkdownRenderer:
 
 def render(source: str) -> str:
     """Render a Markdown document to an HTML fragment (no <html>/<body> wrapper)."""
-    return MarkdownRenderer().render(source)
+    return StayPresentMarkdownRenderer().render(source)
