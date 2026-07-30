@@ -185,6 +185,27 @@ def _build_bot_labels(bot_configs: list) -> list:
     return labels
 
 
+def _validate_env_keys(env_dict: dict, label: str) -> None:
+    """
+    Every key in an `env` dict is ultimately handed to `subprocess.Popen(env=...)`,
+    which requires plain string keys (and `_bot_env()` below already
+    stringifies the *values* for exactly this reason) - but a non-str key was
+    never checked here, so it surfaced only once the bot process actually
+    tried to launch, as a bare `TypeError: expected str, bytes or
+    os.PathLike object, not int` from deep inside the subprocess/os
+    internals, with nothing pointing back at the real cause. Checked up
+    front instead, alongside every other bot-config validation in this
+    function, with a message that actually names the offending key and
+    where it came from.
+    """
+    for k in env_dict:
+        if not isinstance(k, str):
+            raise TypeError(
+                f"staypresent.run(): every key in {label} must be a str, got "
+                f"{type(k).__name__} ({k!r})."
+            )
+
+
 def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots):
     """
     Turn the various ways of describing one or more bots into a single,
@@ -245,6 +266,7 @@ def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots):
                 raise TypeError(
                     f"staypresent.run(): bots[{i}]['env'] must be a dict, got {type(entry_env).__name__}."
                 )
+            _validate_env_keys(entry_env, f"bots[{i}]['env']")
 
             configs.append({
                 "file": entry_file,
@@ -298,6 +320,8 @@ def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots):
         raise TypeError(f"staypresent.run(): bot_args must be a list, got {type(bot_args).__name__}.")
     if env is not None and not isinstance(env, dict):
         raise TypeError(f"staypresent.run(): env must be a dict, got {type(env).__name__}.")
+    if env is not None:
+        _validate_env_keys(env, "env")
 
     # When multiple bots are given via 'bot_file'/'bot_module', the same
     # args/env apply to all of them - use 'bots' instead if each one needs
@@ -790,5 +814,14 @@ def run(
             "%d of %d bot process(es) failed to stay up: %s",
             len(failures), total_bots, failed_labels,
         )
-        worst_exit_code = next((code for code in failures.values() if code), 1)
+        # Sorted by index (same order as failed_labels above) rather than
+        # dict insertion order: failures[index] is written by each bot's own
+        # monitor thread as it gives up, so insertion order reflects the
+        # essentially-random order those threads happen to finish in, not
+        # anything meaningful about severity. Without sorting, run()'s own
+        # final exit code could silently differ between two otherwise-
+        # identical runs (same bots, same failures) purely based on thread
+        # scheduling - sorting makes it deterministic: the lowest-indexed
+        # failing bot's exit code is used every time.
+        worst_exit_code = next((failures[i] for i in sorted(failures) if failures[i]), 1)
         sys.exit(_to_process_exit_code(worst_exit_code))

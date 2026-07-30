@@ -1,5 +1,31 @@
 # StayPresent — Changelog
 
+## 1.5.16
+
+### Fixed
+
+* **`staypresent.web.get()`/`get_all()` returned a live, mutable reference into StayPresent's own served state, not an independent copy.** `json()` already documents that it deep-copies the data you pass *in*, so mutating your original object afterwards can't affect the live response - but `get()`/`get_all()` only ever shallow-copied the outer `{"type": ..., "value": ...}` dict, leaving `"value"` itself (a dict/list for a `"json"` entry) pointing at the exact same object StayPresent serves on every request. Something as reasonable-looking as `state = staypresent.web.get(); state["value"]["count"] += 1` silently mutated the *live* response every future request would serve - no call to `json()` involved at all. `get()`/`get_all()` now deep-copy the state they return, so nothing you do with the result can reach back into StayPresent's internal state.
+
+* **A non-string key in `env`/`bots[i]['env']` surfaced as a confusing, unhelpful error deep inside subprocess internals instead of a clear validation error.** `staypresent.run(..., env={1: "x"})` didn't fail until the bot process actually tried to launch, at which point it raised a bare `TypeError: expected str, bytes or os.PathLike object, not int` from deep inside `subprocess`/`os` internals - nothing about that message points back at `env` as the actual cause. Every other bit of bot configuration (`bot_args`, `bots[i]['args']`, `bots[i]['env']`'s own type) is already validated up front with a clear, specific message; `env`'s *keys* were the one gap. Both `env` and each `bots[i]['env']` now validate that every key is a `str` at the same point as everything else, with a message that names the offending key and where it came from.
+
+### Documentation
+
+* Documented (in the `env` parameter table entry) that `env` dict keys must be strings.
+
+---
+
+## 1.5.15
+
+### Fixed
+
+* **`staypresent.run()`'s own final exit code could silently differ between two otherwise-identical runs when more than one bot failed.** When multiple bots ultimately gave up (restarts exhausted, or `restart_on_crash=False`), the process's own `sys.exit()` code was picked from `failures.values()` in plain dict-insertion order - and since each bot's monitor thread writes its own entry independently, that order reflects nothing more meaningful than the essentially-random order those threads happened to finish in, not which failure was "worst". Two runs with the exact same bots and the exact same exit codes could report different process-level exit codes purely based on thread scheduling. The failed-bots *log line* right above it was already sorted by bot index for this same reason; the exit-code selection now is too, so it's deterministic - the lowest-indexed failing bot's own exit code is always used.
+
+### Documentation
+
+* Documented (in the [Crash Recovery Protocol](DOCUMENTATION.md#crash-recovery-protocol) section) that when more than one bot fails, the process's own exit code is deterministically the lowest-indexed failing bot's exit code, matching the fix above.
+
+---
+
 ## 1.5.14
 
 ### Documentation

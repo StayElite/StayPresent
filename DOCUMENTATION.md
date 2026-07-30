@@ -271,6 +271,8 @@ current_state = staypresent.web.get()
 
 `get()` defaults to `path="/"`; pass a different `path` to inspect any other registered route. For a Markdown entry, the returned dict also includes `mode`, `favicon`, `title`, and `description` keys.
 
+Both `get()` and `get_all()` return an independent deep copy of the state — mutating the returned dict (including a nested `"value"` dict/list for a `"json"` entry) afterwards has no effect on what StayPresent actually serves. Call `json()`/`text()`/`html()`/`markdown()` again to change the live response instead.
+
 
 ---
 
@@ -383,7 +385,7 @@ staypresent.run(bots=[
 | `restart_delay` | `float` | `2.0` | Seconds to wait before process respawn. Must be `>= 0`. This wait is interruptible: a `Ctrl+C`/`SIGTERM` arriving during it wakes the bot's monitor thread immediately instead of only after the full delay elapses, so shutdown isn't held up waiting out a restart backoff — see the note on shutdown ordering below.
 | `restart_reset_after` | `float` | `60.0` | Seconds of continuous uptime required to reset a bot's crash counter to zero. Must be `>= 0`. |
 | `bot_args` | `list` | `None` | CLI arguments to pass to every bot in `bot_file`/`bot_module` (e.g., `["--verbose"]`). Must be a list, not a bare string. Ignored when `bots` is used. |
-| `env` | `dict` | `None` | Environment variables injected into every bot in `bot_file`/`bot_module`, merged over the current process's environment. Ignored when `bots` is used. |
+| `env` | `dict` | `None` | Environment variables injected into every bot in `bot_file`/`bot_module`, merged over the current process's environment. Keys must be strings (values are coerced to strings automatically). Ignored when `bots` is used. |
 | `bots` | `list[dict]` | `None` | Per-bot configuration: `[{"file": ...}, {"module": ...}, ...]`, each with optional `"args"`/`"env"` — exactly one of `"file"`/`"module"` per entry. Mutually exclusive with `bot_file`/`bot_module`/`bot_args`/`env`. |
 | `install_signal_handlers` | `bool` | `True` | Whether `run()` installs its own `SIGINT`/`SIGTERM` handlers for graceful shutdown. When `True`, any handler your own script already registered for those signals *before* calling `run()` is chained: `run()`'s handler runs its own cleanup (terminating bot processes, logging active cron pingers) first, then calls your previously-installed handler afterward, rather than silently discarding it. Set to `False` to skip installing StayPresent's handlers entirely — useful if your script wants full, exclusive control over shutdown signaling. |
 
@@ -396,7 +398,7 @@ StayPresent strictly monitors every bot's subprocess lifecycle, independently:
 * **Clean Exits:** An exit code of `0` is treated as an intentional shutdown for that bot and bypasses restart logic.
 * **Signals:** Interruptions (`SIGINT`/`Ctrl+C`, `SIGTERM`) initiate a clean teardown of the server and every bot. If your own script already installed a handler for `SIGINT`/`SIGTERM` before calling `run()`, it's chained — called after StayPresent's own cleanup finishes, not silently replaced (see `install_signal_handlers` in the parameter table above). Signal handlers can only be registered on the main thread — if `run()` is called from elsewhere, a warning is logged and graceful signal handling is skipped rather than crashing. A signal arriving while a bot is in its `restart_delay` backoff (waiting to respawn after a crash) is handled safely: shutdown and the pending respawn are synchronized so exactly one of them wins — either the respawn is cancelled before it happens, or shutdown terminates the freshly-respawned process too - so a shutdown can never leave an untracked, un-terminated bot process running.
 * **Consecutive-Crash Budget:** `max_restarts` counts *consecutive* crashes. If a bot stays up for at least `restart_reset_after` seconds after a restart, its counter resets to 0 — so a long-running bot that occasionally crashes once isn't penalized for crashes from long ago.
-* **Terminal Failures:** If `max_restarts` is exhausted for a bot, or if restarts are disabled and it crashes, that bot is marked as permanently failed (but other bots keep running). Once every bot has finished, if any bot ended in a permanently-failed state, `staypresent.run()` exits the main process with a non-zero exit code, so platform-level orchestrators (Docker, systemd, Render, Railway) correctly detect the failure and can apply their own restart policy.
+* **Terminal Failures:** If `max_restarts` is exhausted for a bot, or if restarts are disabled and it crashes, that bot is marked as permanently failed (but other bots keep running). Once every bot has finished, if any bot ended in a permanently-failed state, `staypresent.run()` exits the main process with a non-zero exit code, so platform-level orchestrators (Docker, systemd, Render, Railway) correctly detect the failure and can apply their own restart policy. When more than one bot fails, the process's own exit code is deterministically the lowest-indexed failing bot's own exit code (not whichever bot's monitor thread happened to finish first).
 * **Relaunch Failures:** If the OS itself refuses to spawn a replacement process during a restart (out of file descriptors/memory, a process-count ulimit, etc.), that's treated as a terminal failure for that bot rather than crashing the monitor thread.
 
 ---

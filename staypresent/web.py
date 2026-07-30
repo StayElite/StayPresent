@@ -391,11 +391,20 @@ def get(path: str = "/") -> dict:
     (e.g. {'type': 'json', 'value': {...}}, or with 'mode'/'favicon'/
     'title'/'description' keys too for a "markdown" entry), or an empty
     dict if nothing is registered there.
+
+    The returned dict (including a nested "value" dict/list for a "json"
+    entry) is a deep copy - mutating it afterwards (e.g. `state =
+    web.get(); state["value"]["x"] = 1`) does NOT change the live
+    response, the same guarantee `json()` itself already makes for the
+    object you pass *into* it. A shallow copy here would otherwise still
+    share the same nested dict/list `json()` stored internally, letting a
+    seemingly read-only `get()` call silently mutate what's actually
+    served to the next request.
     """
     p = _normalize_path(path)
     with _lock:
         state = _routes.get(p)
-    return dict(state) if state is not None else {}
+    return copy.deepcopy(state) if state is not None else {}
 
 
 def get_all() -> dict:
@@ -403,9 +412,13 @@ def get_all() -> dict:
     Return every currently registered path -> state mapping. Useful for
     debugging, testing, or building your own dashboard of what
     StayPresent is currently serving.
+
+    Same deep-copy guarantee as `get()`: the returned dicts (including any
+    nested "value" for a "json" entry) are independent of StayPresent's
+    live, internal state.
     """
     with _lock:
-        return {p: dict(state) for p, state in _routes.items()}
+        return {p: copy.deepcopy(state) for p, state in _routes.items()}
 
 
 def paths() -> list:
