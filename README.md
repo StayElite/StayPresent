@@ -28,9 +28,9 @@ It supports running multiple bots under a single service, with each process moni
 > Designed for platforms such as **Render, Railway, Koyeb, Heroku**, and other hosts that expect applications to keep an HTTP port open.
 
 📖 **This README covers the essentials.**
-For the complete configuration reference, deployment guide, web settings, process management, and FAQ, see the [full documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.mdd).
+For the complete configuration reference, deployment guide, web settings, process management, and FAQ, see the [full documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md).
 
-For release notes and changes, see the [changelog](https://github.com/StayElite/StayPresent/blob/main/CHANGELOG.mdd).
+For release notes and changes, see the [changelog](https://github.com/StayElite/StayPresent/blob/main/CHANGELOG.md).
 
 ---
 
@@ -261,7 +261,7 @@ This makes StayPresent useful not only for bots, but also for lightweight backgr
 | `staypresent.ping(...)`   | Send a single HTTP ping.                        |
 | `staypresent.cron(...)`   | Schedule recurring background HTTP pings.       |
 
-For the complete API and configuration reference, see the [documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.mdd).
+For the complete API and configuration reference, see the [documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md).
 
 ---
 
@@ -301,8 +301,8 @@ This allows the hosting platform to detect an active HTTP service while StayPres
 
 ## 📚 Documentation
 
-* **[Full Documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.mdd)** — Configuration, deployment, web settings, process management, and FAQ.
-* **[Changelog](https://github.com/StayElite/StayPresent/blob/main/CHANGELOG.mdd)** — Releases and changes.
+* **[Full Documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md)** — Configuration, deployment, web settings, process management, and FAQ.
+* **[Changelog](https://github.com/StayElite/StayPresent/blob/main/CHANGELOG.md)** — Releases and changes.
 
 ---
 
