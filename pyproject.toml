@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "staypresent"
-version = "1.5.16"
-description = "Keep your Python bots alive with a zero-config, production-ready background web server."
+version = "1.6.0"
+description = "Keep your Python bots alive with automatic restarts, heartbeat monitoring, and a built-in status dashboard."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
@@ -20,19 +20,22 @@ keywords = [
     "webserver",
     "keepalive",
     "bot",
-    
+    "process-monitoring",
+    "process-manager",
+    "service-monitoring",
+
     # Target integrations
     "telegram-bot",
     "discord-bot",
     "automation",
     "background-worker",
-    
+
     # Target deployment platforms
     "render",
     "heroku",
     "railway",
     "koyeb",
-    
+
     # Technical features
     "waitress",
     "wsgi",
@@ -41,7 +44,15 @@ keywords = [
     "hosting",
     "deployment",
     "markdown",
-    "multi-bot"
+    "multi-bot",
+    "heartbeat",
+    "health-check",
+    "process-restart",
+    "uptime",
+    "status-dashboard",
+    "monitoring",
+    "worker",
+    "background-process",
 ]
 
 classifiers = [

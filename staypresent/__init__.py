@@ -15,9 +15,9 @@ Copyright (c) 2026 Ashish Sharma (Stay Elite)
 Licensed under the MIT License. See the LICENSE file for details.
 """
 
-from .runner import run
+from .runner import run, heartbeat
 from .pinger import ping, cron, active_cron_handles
 from . import web
 
-__version__ = "1.5.16"
-__all__ = ["run", "web", "ping", "cron", "active_cron_handles", "__version__"]
+__version__ = "1.6.0"
+__all__ = ["run", "heartbeat", "web", "ping", "cron", "active_cron_handles", "__version__"]

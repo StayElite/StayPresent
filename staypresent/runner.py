@@ -15,6 +15,7 @@ Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
 # Licensed under the MIT License. See the LICENSE file for details.
 
 import subprocess
+import tempfile
 import threading
 import logging
 import signal
@@ -23,7 +24,44 @@ import sys
 import os
 
 from . import pinger
+from . import status_registry
 from .server import app
+
+# Env var name a bot process can read (see heartbeat() below) to find the
+# file it should touch periodically to prove it's still alive - only set
+# when staypresent.run(heartbeat_timeout=...) is actually used; absent
+# otherwise, in which case heartbeat() is a harmless no-op.
+_HEARTBEAT_ENV_VAR = "STAYPRESENT_HEARTBEAT_FILE"
+
+
+def heartbeat() -> None:
+    """
+    Call this periodically from inside your own bot script to prove to
+    StayPresent that it's still alive and doing real work - not just
+    still running, which a deadlocked/hung process technically still is.
+
+    Only meaningful when the parent staypresent.run() call was given
+    heartbeat_timeout=<seconds>: if your bot goes longer than that
+    without calling this, StayPresent treats it as hung, terminates it,
+    and lets its normal crash/restart handling take over. If
+    heartbeat_timeout wasn't set, this is a harmless no-op - safe to call
+    unconditionally from a bot that might run either standalone or under
+    StayPresent.
+
+    Cheap enough to call on every iteration of a bot's main loop; there's
+    no need to throttle calls yourself.
+    """
+    path = os.environ.get(_HEARTBEAT_ENV_VAR)
+    if not path:
+        return
+    try:
+        with open(path, "a"):
+            pass
+        os.utime(path, None)
+    except OSError:
+        # Best-effort - a bot shouldn't crash because its own liveness
+        # signal couldn't be written (e.g. temp dir briefly unwritable).
+        pass
 
 # run() uses a shared, module-level Flask app (staypresent.server.app),
 # so a second call in the same process would just try to bind the exact
@@ -46,6 +84,59 @@ if not logger.handlers:
     _handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s"))
     logger.addHandler(_handler)
     logger.propagate = False
+
+
+def _pump_output(pipe, stream_name: str, index: int, label: str, echo_to) -> None:
+    """
+    Runs on its own daemon thread, one per bot process per stream (stdout/
+    stderr) - reads that stream line by line for as long as the process is
+    alive, forwarding each line to two places:
+
+      1. `echo_to` (the parent process's own stdout/stderr) - so a bot's
+         output still shows up live in the console exactly as it did
+         before StayPresent captured it (via subprocess.PIPE below),
+         instead of going silent from the operator's point of view.
+      2. status_registry.append_log() - a bounded per-bot ring buffer the
+         status page's admin view reads from (a "last log" tail per
+         service, and the last captured line attached to crash
+         incidents).
+
+    Two of these run concurrently per bot (one for stdout, one for
+    stderr) precisely so reading them can't deadlock: subprocess.PIPE has
+    a finite OS pipe buffer, and if only one stream were drained while
+    the other filled up unread, that bot's process would eventually block
+    trying to write to the full one and hang - both must be drained
+    independently and continuously.
+    """
+    try:
+        for line in iter(pipe.readline, ""):
+            line = line.rstrip("\n")
+            print(f"[{label}] {line}", file=echo_to, flush=True)
+            status_registry.append_log(index, stream_name, line)
+    except (ValueError, OSError):
+        # Pipe closed out from under us (process torn down, interpreter
+        # shutting down) - nothing more to read, just stop quietly.
+        pass
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def _start_output_pumps(process, index: int, label: str) -> None:
+    """Spawns the stdout/stderr reader threads for one freshly-launched
+    bot process - see _pump_output() above. Called right after every
+    subprocess.Popen() for a bot, both the initial launch and every
+    restart, so capture never has a gap while a bot is running."""
+    threading.Thread(
+        target=_pump_output, args=(process.stdout, "stdout", index, label, sys.stdout),
+        daemon=True, name=f"staypresent-bot-{index}-stdout",
+    ).start()
+    threading.Thread(
+        target=_pump_output, args=(process.stderr, "stderr", index, label, sys.stderr),
+        daemon=True, name=f"staypresent-bot-{index}-stderr",
+    ).start()
 
 
 def _to_process_exit_code(returncode: int) -> int:
@@ -149,6 +240,29 @@ def _bot_full_name(cfg: dict) -> str:
     return cfg["file"] if cfg.get("file") else cfg["module"]
 
 
+def _disambiguated_bot_names(bot_configs: list) -> list:
+    """
+    One display name per bot in `bot_configs`: normally just its short name
+    (a script's filename, or a module's dotted name), but promoted to the
+    fully-disambiguating name (full file path) for every bot whose short
+    name collides with another bot's in this same run - e.g.
+    "shard_a/bot.py" and "shard_b/bot.py" both launched via
+    `staypresent.run(["shard_a/bot.py", "shard_b/bot.py"])` would otherwise
+    both be indistinguishable as just "bot.py". Shared by `_build_bot_labels()`
+    (log lines) and `status_registry.reset()` (the status page's default
+    service names), so a bot is identified the same way in both places.
+    """
+    short_names = [_bot_short_name(cfg) for cfg in bot_configs]
+    full_names = [_bot_full_name(cfg) for cfg in bot_configs]
+    name_counts = {}
+    for name in short_names:
+        name_counts[name] = name_counts.get(name, 0) + 1
+    return [
+        full_names[i] if name_counts[short_names[i]] > 1 else short_names[i]
+        for i in range(len(bot_configs))
+    ]
+
+
 def _build_bot_labels(bot_configs: list) -> list:
     """
     Build a display label for every bot in bot_configs, used consistently
@@ -172,17 +286,11 @@ def _build_bot_labels(bot_configs: list) -> list:
     anything.
     """
     total = len(bot_configs)
-    short_names = [_bot_short_name(cfg) for cfg in bot_configs]
-    full_names = [_bot_full_name(cfg) for cfg in bot_configs]
-    name_counts = {}
-    for name in short_names:
-        name_counts[name] = name_counts.get(name, 0) + 1
-
-    labels = []
-    for i in range(total):
-        display = full_names[i] if name_counts[short_names[i]] > 1 else short_names[i]
-        labels.append(f"bot '{display}'" if total == 1 else f"bot[{i}] '{display}'")
-    return labels
+    display_names = _disambiguated_bot_names(bot_configs)
+    return [
+        f"bot '{display}'" if total == 1 else f"bot[{i}] '{display}'"
+        for i, display in enumerate(display_names)
+    ]
 
 
 def _validate_env_keys(env_dict: dict, label: str) -> None:
@@ -206,7 +314,7 @@ def _validate_env_keys(env_dict: dict, label: str) -> None:
             )
 
 
-def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots):
+def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots, web_server):
     """
     Turn the various ways of describing one or more bots into a single,
     uniform list of {"file": str|None, "module": str|None, "args": list,
@@ -217,7 +325,15 @@ def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots):
     exists in the first place - running a package's module directly as a
     bare script breaks its relative imports).
 
-    Returns the normalized list. Raises TypeError/ValueError on bad input.
+    Returns the normalized list, which may be empty - `bot_file`,
+    `bot_module`, and `bots` are all optional as long as `web_server` is
+    True: that combination means "run the web server only, no bot(s)",
+    which is exactly as valid a use of `run()` as "bot(s), no web server"
+    (`web_server=False`) is. What's invalid is neither: nothing to
+    supervise and nothing to serve is never a sensible call, so that
+    specific combination still raises below.
+
+    Raises TypeError/ValueError on bad input.
     """
     if bots is not None:
         if bot_file is not None or bot_module is not None or bot_args is not None or env is not None:
@@ -268,11 +384,37 @@ def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots):
                 )
             _validate_env_keys(entry_env, f"bots[{i}]['env']")
 
+            entry_services_name = entry.get("services_name")
+            entry_services_description = entry.get("services_description")
+            for pname, pval in (
+                ("services_name", entry_services_name),
+                ("services_description", entry_services_description),
+            ):
+                if pval is not None and not isinstance(pval, str):
+                    raise TypeError(
+                        f"staypresent.run(): bots[{i}]['{pname}'] must be a str or None, "
+                        f"got {type(pval).__name__}."
+                    )
+
+            # Per-bot status-page visibility override - same "None means
+            # not set here, fall back to run()'s own `status=`" resolution
+            # `services_name`/`services_description` already use above,
+            # applied in run() itself once the final bot list is known.
+            entry_status = entry.get("status")
+            if entry_status is not None and not isinstance(entry_status, bool):
+                raise TypeError(
+                    f"staypresent.run(): bots[{i}]['status'] must be a bool or None, "
+                    f"got {type(entry_status).__name__}."
+                )
+
             configs.append({
                 "file": entry_file,
                 "module": entry_module,
                 "args": list(entry_args),
                 "env": dict(entry_env),
+                "services_name": entry_services_name,
+                "services_description": entry_services_description,
+                "status": entry_status,
             })
         return configs
 
@@ -282,10 +424,13 @@ def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots):
             "whichever matches how your bot(s) are meant to be launched, not both."
         )
     if bot_file is None and bot_module is None:
-        raise TypeError(
-            "staypresent.run(): one of 'bot_file' or 'bot_module' is required (pass a single "
-            "value, a list of values for multiple bots, or use 'bots' for per-bot args/env)."
-        )
+        if not web_server:
+            raise TypeError(
+                "staypresent.run(): nothing to do - no bot(s) given ('bot_file'/'bot_module'/"
+                "'bots' are all unset) and web_server=False. Give at least one bot, leave "
+                "web_server=True to run the web server on its own, or both."
+            )
+        return []
 
     if bot_module is not None:
         key = "module"
@@ -330,7 +475,15 @@ def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots):
     shared_env = dict(env) if env else {}
     other_key = "module" if key == "file" else "file"
     return [
-        {key: v, other_key: None, "args": list(shared_args), "env": dict(shared_env)}
+        {
+            key: v,
+            other_key: None,
+            "args": list(shared_args),
+            "env": dict(shared_env),
+            "services_name": None,
+            "services_description": None,
+            "status": None,
+        }
         for v in values
     ]
 
@@ -346,13 +499,22 @@ def run(
     max_restarts: int = 5,
     restart_delay: float = 2.0,
     restart_reset_after: float = 60.0,
+    heartbeat_timeout: float = None,
     bot_args: list = None,
     env: dict = None,
     bots: list = None,
     install_signal_handlers: bool = True,
+    web_server: bool = True,
+    services_name: str = None,
+    services_description: str = None,
+    status: bool = True,
 ):
     """
-    Starts the web server + your bot process(es).
+    Starts the web server, your bot process(es), or both - whichever you
+    ask for. At least one of the two has to be actually happening (running
+    with no bots AND web_server=False is rejected, since that would do
+    nothing at all), but either one alone is a fully supported way to call
+    this.
 
     Example (single bot):
         staypresent.run("bot.py")
@@ -370,6 +532,15 @@ def run(
             {"file": "telegram_bot.py", "args": ["--verbose"]},
             {"module": "discord_bot.worker", "env": {"SHARD": "0"}},
         ])
+
+    Example (web server only, no bot - e.g. hosting just a status/health
+    page with nothing for StayPresent itself to supervise):
+        staypresent.run()
+
+    Example (bot only, no web server - e.g. a worker process that doesn't
+    need to expose an HTTP port at all, just StayPresent's crash/restart
+    supervision):
+        staypresent.run("worker.py", web_server=False)
 
     By default, if the optional `waitress` package is installed, it is used
     to serve the app so you don't see Flask's "development server" warning.
@@ -400,6 +571,9 @@ def run(
             `python <file> ...`. Mutually exclusive with `bot_module` and
             with `bots` (use `bots` instead if each bot needs its own
             `bot_args`/`env`, or needs a mix of files and modules).
+            Optional as long as `web_server` is True - omit `bot_file`,
+            `bot_module`, and `bots` entirely to run the web server with no
+            bot at all.
         bot_module: Dotted module path (e.g. "mypkg.bot") to run instead of
             a bare script, or a list of such module paths to run several at
             once. Launched as `python -m <module> ...`, exactly like
@@ -440,6 +614,19 @@ def run(
             instead of a lifetime one, so a bot that runs fine for a long
             time and then crashes once isn't penalized for earlier,
             unrelated crashes. Ignored if restart_on_crash is False.
+        heartbeat_timeout: Optional. If given (seconds), StayPresent
+            additionally detects a *hung* bot - one whose process is
+            still running but has stopped doing anything (deadlocked,
+            stuck in an infinite loop, blocked forever on I/O) - which
+            exit-code-based crash detection can never catch on its own,
+            since a hung process never exits. Requires your bot to call
+            `staypresent.heartbeat()` periodically (e.g. once per loop
+            iteration); if it goes longer than `heartbeat_timeout`
+            seconds without doing so, StayPresent logs a "possibly hung"
+            incident, terminates the process, and lets the normal
+            crash/restart handling above take over. Left as None
+            (default) means no such check runs at all - a bot that never
+            calls `heartbeat()` is not penalized unless this is set.
         bot_args: Optional list of extra command-line arguments to pass to
             every bot in `bot_file`/`bot_module` (e.g. `["--verbose"]`).
             Ignored/invalid when `bots` is used - put per-bot args in each
@@ -450,11 +637,23 @@ def run(
             add/override). Ignored/invalid when `bots` is used - put
             per-bot env in each bot's dict there instead.
         bots: Optional list of dicts for per-bot configuration, one dict per
-            bot: `{"file": "bot.py", "args": [...], "env": {...}}` or
-            `{"module": "mypkg.bot", "args": [...], "env": {...}}` - give
-            exactly one of `"file"`/`"module"` per entry (`"args"`/`"env"`
-            are optional). Mutually exclusive with
-            `bot_file`/`bot_module`/`bot_args`/`env`.
+            bot: `{"file": "bot.py", "args": [...], "env": {...},
+            "services_name": "Bot A", "services_description": "...",
+            "status": True}` or the `"module"` equivalent - give exactly
+            one of `"file"`/`"module"` per entry (`"args"`/`"env"`/
+            `"services_name"`/`"services_description"`/`"status"` are all
+            optional). `"services_name"`/`"services_description"` set that
+            one bot's status-page display name/description directly (same
+            effect as this function's own `services_name`/
+            `services_description`, but scoped to a single entry here
+            instead of requiring exactly one bot process-wide - this is
+            the way to tag bots individually when there's more than one).
+            `"status"`, if set, overrides this function's own `status=`
+            just for that one bot - e.g.
+            `bots=[{"file": "a.py"}, {"file": "b.py", "status": False}]`
+            keeps bot A visible on the status page (the default) while
+            hiding bot B from it. Mutually exclusive with `bot_file`/
+            `bot_module`/`bot_args`/`env`.
         install_signal_handlers: If True (default), StayPresent installs
             its own SIGINT/SIGTERM handlers to gracefully stop the bot
             process(es) and web server on Ctrl+C / a container stop
@@ -464,6 +663,52 @@ def run(
             instead of silently being replaced and discarded. Set this to
             False to skip installing StayPresent's handlers entirely and
             take full responsibility for shutdown signaling yourself.
+        web_server: If True (default), start the background web server.
+            Set to False to run only your bot(s) - StayPresent's crash
+            detection, auto-restart, and multi-bot supervision all still
+            apply, there's just no HTTP server at all (`host`/`port`/
+            `production`/`threads` are ignored, and every `staypresent.web`
+            registration is inert, since nothing is listening to serve it).
+            Requires at least one bot (`bot_file`/`bot_module`/`bots`) -
+            `web_server=False` with no bot configured either would do
+            nothing at all, so that combination raises `TypeError`.
+        services_name: Optional display name to use, on the status page,
+            for the one bot this call configures - instead of the default
+            "run() with multiple bots" combination requires (see below).
+            When `web_server=True` (the default) and no bot is configured
+            at all, this instead renames the web server's own row (whose
+            key is `"web_server"`). Same last-call-wins behavior as the
+            `staypresent.web.html()`/`json()`/`text()`/`markdown()`
+            functions' own `services_name` - whichever of those or this
+            is called last for the same target wins outright; a call
+            here left unset (the default) never overwrites one already
+            made via one of those.
+
+            Only valid with zero or one bot configured (a single
+            `bot_file`/`bot_module` string, or `bots` with exactly one
+            entry) - raises `TypeError` with more than one, since a
+            single string can't unambiguously name any one of several
+            bots. Tag each bot individually in that case instead, via
+            `bots=[{"file": "a.py", "services_name": "Bot A"}, {"file":
+            "b.py", "services_name": "Bot B"}]` (each entry's own
+            `services_name`/`services_description` keys, both optional).
+        services_description: Optional description shown under that same
+            row's name on the status page. Same single-bot-only rule,
+            per-bot `bots[i]['services_description']` alternative for
+            multiple bots, and last-call-wins behavior as `services_name`
+            above.
+        status: Whether the bot(s)/worker process(es) this call configures
+            get their own row on the status page at all. Defaults to True
+            - shown unless you explicitly turn it off. Set to False to
+            supervise a bot exactly as normal (crash detection, auto-
+            restart, everything) while keeping it off the status page
+            entirely - e.g. an internal worker nobody outside the team
+            needs to see. Applies to every bot this call configures;
+            override it for one bot at a time instead via that bot's own
+            `bots=[{"file": "a.py", "status": False}, ...]` entry, which
+            takes priority over this. Has no effect on the web server's
+            own row - see `staypresent.web.*()`'s own `status=` param for
+            that (opt-in per route, defaulting to False).
     """
 
     global _run_called
@@ -480,7 +725,23 @@ def run(
             "bots=[{'file': 'a.py'}, {'file': 'b.py'}])."
         )
 
-    bot_configs = _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots)
+    bot_configs = _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots, web_server)
+
+    if not bot_configs and (bot_args is not None or env is not None):
+        # Reachable when web_server=True (the default) and no bot_file/
+        # bot_module/bots was given either - a valid, supported call
+        # ("web server only", see _normalize_bot_configs above), but
+        # bot_args/env only ever apply to a bot process StayPresent
+        # itself launches. With no bot configured at all, there's nothing
+        # to pass them to, so they were previously accepted and silently
+        # discarded - easy to mistake for "it'll apply once I add a bot
+        # later" or simply not notice at all. Mirrors the analogous
+        # host/port/production/threads warning below for the opposite
+        # case (bot(s) but no web server).
+        logger.warning(
+            "staypresent.run(): 'bot_args'/'env' were given but no bot ('bot_file'/"
+            "'bot_module'/'bots') was configured, so they have no effect."
+        )
 
     for cfg in bot_configs:
         if cfg["file"] is not None and not os.path.isfile(cfg["file"]):
@@ -500,9 +761,33 @@ def run(
         raise ValueError(f"staypresent.run(): max_restarts must be >= 0, got {max_restarts}.")
     if restart_delay < 0:
         raise ValueError(f"staypresent.run(): restart_delay must be >= 0, got {restart_delay}.")
+    # Validated up front (same as the other params above) even though the
+    # result isn't actually applied until after status_registry.reset()
+    # below - so a bad services_name/services_description raises before
+    # _run_called is claimed, instead of leaving the process in a
+    # half-started state.
+    for _pname, _pval in (("services_name", services_name), ("services_description", services_description)):
+        if _pval is not None and not isinstance(_pval, str):
+            raise TypeError(
+                f"staypresent.run(): '{_pname}' must be a str or None, got {type(_pval).__name__}."
+            )
+    if (services_name is not None or services_description is not None) and len(bot_configs) > 1:
+        raise TypeError(
+            "staypresent.run(): 'services_name'/'services_description' only work when "
+            "there's exactly one bot (or none) configured - with multiple bots, tag each "
+            "one individually instead, e.g. bots=[{'file': 'a.py', 'services_name': "
+            "'Bot A'}, {'file': 'b.py', 'services_name': 'Bot B'}]."
+        )
+    if not isinstance(status, bool):
+        raise TypeError(f"staypresent.run(): 'status' must be a bool, got {type(status).__name__}.")
     if restart_reset_after < 0:
         raise ValueError(
             f"staypresent.run(): restart_reset_after must be >= 0, got {restart_reset_after}."
+        )
+    if heartbeat_timeout is not None and heartbeat_timeout <= 0:
+        raise ValueError(
+            f"staypresent.run(): heartbeat_timeout must be > 0 (or None to disable), "
+            f"got {heartbeat_timeout}."
         )
 
     # Only now - once every validation above has actually passed and we're
@@ -526,42 +811,215 @@ def run(
             )
         _run_called = True
 
-    started_event = threading.Event()
-    error_holder = []
-
-    flask_thread = threading.Thread(
-        target=_run_server,
-        args=(host, port, started_event, error_holder, production, threads),
-        daemon=True,
-    )
-    flask_thread.start()
-
-    # Give the server a brief moment to fail fast (e.g. port already in use)
-    # before we launch the bot process(es) alongside it.
-    started_event.wait(timeout=1.5)
-    if error_holder:
-        logger.error("Web server failed to start on %s:%s -> %s", host, port, error_holder[0])
-        raise error_holder[0]
-
-    if port == 0:
-        logger.info(
-            "Web server running on %s (port 0 requested - the OS assigned a free "
-            "port; check the server's own startup output above for the actual port).",
-            host,
-        )
-    else:
-        logger.info("Web server running on %s:%s", host, port)
-
+    # Computed before the server thread starts (not after, as a prior
+    # version of this code did) - status_registry.reset() has to happen
+    # before the server can possibly receive its first request, or a
+    # status page request arriving in that gap would see an empty
+    # service list even though bots ARE configured, just not registered
+    # yet. bot_labels/total_bots only depend on bot_configs, which is
+    # already fully validated by this point, so there's no reason they
+    # need to wait until after the server's up anyway.
     total_bots = len(bot_configs)
     bot_labels = _build_bot_labels(bot_configs)
+    # Each bot's own bots[i]['services_name'/'services_description'], if
+    # given, is applied directly against that bot's own file/module key -
+    # independent of whichever bot count this run() call ends up with, so
+    # this can happen before reset() below.
+    for cfg in bot_configs:
+        per_bot_name = cfg.get("services_name")
+        per_bot_description = cfg.get("services_description")
+        if per_bot_name is not None or per_bot_description is not None:
+            status_registry.update_service_override(
+                cfg["file"] or cfg["module"],
+                per_bot_name,
+                per_bot_description,
+                caller="staypresent.run() (bots[i])",
+            )
+    # This function's own services_name/services_description (a plain
+    # str) can't resolve to a real key until reset() below knows the
+    # final bot count - staged here, then resolved from inside reset()
+    # itself. Only touch the pending slot if run() was actually given one -
+    # leaving both unset (the default) must NOT wipe out a pending
+    # override already staged by an earlier staypresent.web.html()/json()/
+    # text()/markdown() call, which is normally called before run() (run()
+    # blocks until shutdown). See set_pending_single_target_override()'s
+    # "last call wins outright" docstring.
+    if services_name is not None or services_description is not None:
+        status_registry.set_pending_single_target_override(
+            services_name, services_description, caller="staypresent.run()"
+        )
+    # Per-bot status-page visibility: a bot's own bots[i]['status'] (if
+    # set) wins outright, otherwise it falls back to this call's own
+    # `status=` (True by default) - same override-then-fallback pattern
+    # bot_labels/services_name already use elsewhere in this function.
+    bot_status = [
+        cfg["status"] if cfg.get("status") is not None else status
+        for cfg in bot_configs
+    ]
+    status_registry.reset(
+        bot_configs,
+        _disambiguated_bot_names(bot_configs),
+        track_web_server=web_server,
+        bot_status=bot_status,
+    )
+    # The web server thread's own pseudo-bot index in status_registry -
+    # only meaningful when web_server=True, but harmless to compute either
+    # way (it's simply never looked up when there's no web server to
+    # track). Placed right after the last real bot, matching reset()'s own
+    # `len(bot_configs)` slot for it.
+    web_server_index = total_bots
+
+    if not web_server and (host != "0.0.0.0" or port != 8080 or production is not True or threads != 4):
+        logger.warning(
+            "staypresent.run(): host/port/production/threads have no effect because "
+            "web_server=False - no web server is being started at all."
+        )
+
+    flask_thread = None
+    if web_server:
+        started_event = threading.Event()
+        error_holder = []
+
+        flask_thread = threading.Thread(
+            target=_run_server,
+            args=(host, port, started_event, error_holder, production, threads),
+            daemon=True,
+        )
+        flask_thread.start()
+
+        # Give the server a brief moment to fail fast (e.g. port already in
+        # use) before we launch the bot process(es) alongside it.
+        started_event.wait(timeout=1.5)
+        if error_holder:
+            logger.error("Web server failed to start on %s:%s -> %s", host, port, error_holder[0])
+            # The status page should reflect this too, not just the log -
+            # it's tracked as a bot-like service (see reset() above)
+            # precisely so a startup failure here shows up the same way a
+            # bot's would, instead of leaving the page silently blind to
+            # the fact that there's no web server behind it at all.
+            status_registry.mark_web_server_down(
+                web_server_index, detail=str(error_holder[0]), failed_to_start=True,
+            )
+            raise error_holder[0]
+
+        if port == 0:
+            logger.info(
+                "Web server running on %s (port 0 requested - the OS assigned a free "
+                "port; check the server's own startup output above for the actual port).",
+                host,
+            )
+        else:
+            logger.info("Web server running on %s:%s", host, port)
+    else:
+        logger.info("web_server=False - no web server will be started; running bot(s) only.")
+
+    def _bot_env(cfg, extra=None):
+        if not cfg["env"] and not extra:
+            return None
+        merged = {**os.environ, **{k: str(v) for k, v in cfg["env"].items()}}
+        if extra:
+            merged.update(extra)
+        return merged
+
+    def _heartbeat_path(index):
+        # Stable per-bot-index path across restarts of the same bot
+        # (keyed by this run's own pid so concurrent staypresent.run()
+        # processes on the same machine never collide on the same file).
+        return os.path.join(tempfile.gettempdir(), f"staypresent-heartbeat-{os.getpid()}-{index}.touch")
+
+    def _touch_heartbeat_file(path):
+        # Reset the file's mtime to "now" at the moment a bot (re)starts,
+        # so a stale mtime left over from a previous crashed attempt
+        # doesn't make the fresh process look hung before it's even had a
+        # chance to call heartbeat() once.
+        try:
+            with open(path, "a"):
+                pass
+            os.utime(path, None)
+        except OSError:
+            pass
+
+    def _remove_heartbeat_file(index):
+        # The path is stable across restarts of the same bot (see
+        # _heartbeat_path above), so it's only ever safe to delete once
+        # that bot index is done for good - a clean exit, a crash it won't
+        # be restarted from, or giving up after max_restarts. Call this at
+        # each of those terminal points (and for every bot on shutdown())
+        # so a long-running deploy doesn't leave one
+        # staypresent-heartbeat-<pid>-<index>.touch file behind per bot,
+        # forever, even after the process exits cleanly.
+        if heartbeat_timeout is None:
+            return
+        try:
+            os.remove(_heartbeat_path(index))
+        except OSError:
+            pass
+
+    def _watch_heartbeat(index, process, heartbeat_path, label):
+        # Polls rather than blocking on anything - cheap, and naturally
+        # exits on its own once the process it's watching does (via the
+        # process.poll() check each iteration), without needing to be
+        # told the process died at all.
+        check_interval = min(5.0, heartbeat_timeout)
+        while True:
+            time.sleep(check_interval)
+            if stopping.is_set() or process.poll() is not None:
+                return
+            try:
+                last_beat = os.path.getmtime(heartbeat_path)
+            except OSError:
+                # Shouldn't normally happen (_touch_heartbeat_file creates
+                # it up front), but don't false-trigger on a missing file.
+                continue
+            if time.time() - last_beat > heartbeat_timeout:
+                logger.error(
+                    "%s has not called staypresent.heartbeat() in over %.0fs - "
+                    "treating it as hung, terminating.",
+                    label, heartbeat_timeout,
+                )
+                status_registry.mark_unresponsive(index)
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+                return
+
+    def _start_heartbeat_watch(index, process, label):
+        if heartbeat_timeout is None:
+            return
+        path = _heartbeat_path(index)
+        _touch_heartbeat_file(path)
+        threading.Thread(
+            target=_watch_heartbeat, args=(index, process, path, label),
+            daemon=True, name=f"staypresent-bot-{index}-heartbeat",
+        ).start()
+
+    # One recovery-check "generation" counter per bot: schedule_recovery_
+    # check() below stamps each scheduled check with the current value at
+    # the moment it's scheduled, then only acts on it if the count is
+    # still unchanged restart_reset_after seconds later - so an earlier
+    # bot start's stale check can never mark a *later* crash/restart
+    # "recovered" out from under it.
+    recovery_generation = [0] * total_bots
+
+    def _schedule_recovery_check(index, process):
+        recovery_generation[index] += 1
+        my_generation = recovery_generation[index]
+
+        def _check():
+            if stopping.is_set() or recovery_generation[index] != my_generation:
+                return
+            if process.poll() is None:
+                status_registry.mark_recovered(index)
+
+        timer = threading.Timer(restart_reset_after, _check)
+        timer.daemon = True
+        timer.start()
 
     def _bot_cmd(cfg):
         if cfg["module"] is not None:
             return [sys.executable, "-m", cfg["module"]] + cfg["args"]
         return [sys.executable, cfg["file"]] + cfg["args"]
-
-    def _bot_env(cfg):
-        return {**os.environ, **{k: str(v) for k, v in cfg["env"].items()}} if cfg["env"] else None
 
     # Holds each bot's current Popen object, keyed by index (or None before
     # its first launch / briefly during a restart). A plain mutable
@@ -613,6 +1071,14 @@ def run(
                 logger.warning("A bot process did not exit in time, killing it.")
                 proc.kill()
                 proc.wait()
+
+        # Every bot's heartbeat-watchdog temp file (if any) is done for
+        # good once the process is dead and we're not coming back for
+        # this run() call - clean them all up rather than leaving them on
+        # disk until the OS's own temp-cleanup policy (if any) gets to
+        # them.
+        for i in range(total_bots):
+            _remove_heartbeat_file(i)
 
         # Chain to whatever handler the host script had already installed
         # for this signal (if any) before we replaced it, so it still runs
@@ -674,10 +1140,14 @@ def run(
         if not stopping.is_set():
             if error_holder:
                 logger.error("Web server stopped unexpectedly: %s", error_holder[-1])
+                detail = str(error_holder[-1])
             else:
                 logger.error("Web server thread exited unexpectedly.")
+                detail = None
+            status_registry.mark_web_server_down(web_server_index, detail=detail)
 
-    threading.Thread(target=_watch_server_thread, daemon=True).start()
+    if flask_thread is not None:
+        threading.Thread(target=_watch_server_thread, daemon=True).start()
 
     # Launch every bot's first attempt up front, in the main thread, so a
     # failure to even spawn one (e.g. bad interpreter, out of file
@@ -687,8 +1157,17 @@ def run(
     # already-started bots are terminated first so we don't leak processes.
     initial_processes = {}
     for i, cfg in enumerate(bot_configs):
+        env_extra = None
+        if heartbeat_timeout is not None:
+            heartbeat_path = _heartbeat_path(i)
+            _touch_heartbeat_file(heartbeat_path)
+            env_extra = {_HEARTBEAT_ENV_VAR: heartbeat_path}
         try:
-            initial_processes[i] = subprocess.Popen(_bot_cmd(cfg), env=_bot_env(cfg))
+            initial_processes[i] = subprocess.Popen(
+                _bot_cmd(cfg), env=_bot_env(cfg, env_extra),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, bufsize=1,
+            )
         except OSError as exc:
             label = bot_labels[i]
             logger.error("Failed to launch %s: %s", label, exc)
@@ -696,8 +1175,18 @@ def run(
                 started.terminate()
             for started in initial_processes.values():
                 started.wait()
+            # This bot (and every other one already launched above) is
+            # never coming up in this run() call - remove every heartbeat
+            # file already touched for them rather than leaving them
+            # behind on disk.
+            for cleanup_index in list(initial_processes) + [i]:
+                _remove_heartbeat_file(cleanup_index)
             raise
         proc_holder[i] = initial_processes[i]
+        _start_output_pumps(initial_processes[i], i, bot_labels[i])
+        _start_heartbeat_watch(i, initial_processes[i], bot_labels[i])
+        status_registry.mark_started(i)
+        _schedule_recovery_check(i, initial_processes[i])
 
     def _manage_bot(index, cfg, process):
         label = bot_labels[index]
@@ -717,11 +1206,15 @@ def run(
 
             if exit_code == 0:
                 logger.info("%s exited cleanly (code 0). Not restarting.", label)
+                status_registry.mark_clean_exit(index)
+                _remove_heartbeat_file(index)
                 return
 
             if not restart_on_crash:
                 logger.warning("%s exited with code %s. Restarts are disabled.", label, exit_code)
                 failures[index] = exit_code
+                status_registry.mark_crashed(index, exit_code, will_restart=False)
+                _remove_heartbeat_file(index)
                 return
 
             if uptime >= restart_reset_after and restarts > 0:
@@ -737,6 +1230,8 @@ def run(
                     label, exit_code, max_restarts,
                 )
                 failures[index] = exit_code
+                status_registry.mark_permanently_failed(index, exit_code)
+                _remove_heartbeat_file(index)
                 return
 
             restarts += 1
@@ -744,6 +1239,7 @@ def run(
                 "%s crashed with code %s. Restarting in %.1fs... (attempt %s/%s)",
                 label, exit_code, restart_delay, restarts, max_restarts,
             )
+            status_registry.mark_crashed(index, exit_code, will_restart=True)
             # stopping.wait() instead of time.sleep(): time.sleep() cannot be
             # woken up early, so a shutdown signal arriving during this
             # backoff window would sit here for the full restart_delay
@@ -772,8 +1268,17 @@ def run(
                 # shutdown() never" is not, and this lock rules that out.
                 if stopping.is_set():
                     return
+                env_extra = None
+                if heartbeat_timeout is not None:
+                    heartbeat_path = _heartbeat_path(index)
+                    _touch_heartbeat_file(heartbeat_path)
+                    env_extra = {_HEARTBEAT_ENV_VAR: heartbeat_path}
                 try:
-                    process = subprocess.Popen(_bot_cmd(cfg), env=_bot_env(cfg))
+                    process = subprocess.Popen(
+                        _bot_cmd(cfg), env=_bot_env(cfg, env_extra),
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, bufsize=1,
+                    )
                 except OSError as exc:
                     # The OS itself refused to spawn the process (out of file
                     # descriptors/memory, a process-count ulimit, etc) - this is
@@ -786,9 +1291,38 @@ def run(
                         label, restarts, max_restarts, exc,
                     )
                     failures[index] = 1
+                    status_registry.mark_permanently_failed(index, 1)
+                    _remove_heartbeat_file(index)
                     return
                 proc_holder[index] = process
+                _start_output_pumps(process, index, label)
+                _start_heartbeat_watch(index, process, label)
             process_started_at = time.monotonic()
+            status_registry.mark_started(index)
+            _schedule_recovery_check(index, process)
+
+    if total_bots == 0:
+        # No bots configured (web_server=True is guaranteed here - the
+        # alternative was already rejected in _normalize_bot_configs).
+        # There's nothing to hand to monitor_threads below - joining an
+        # empty list returns immediately - so without this, run() would
+        # just return right after starting the server, and since
+        # flask_thread is itself a daemon thread, the whole process would
+        # then exit immediately behind it instead of actually staying up.
+        # Blocking on the server thread directly keeps the process alive
+        # the same way joining bot monitor threads normally would, and is
+        # interrupted the same way too: shutdown()'s sys.exit(0) raises
+        # SystemExit right here when a signal arrives.
+        flask_thread.join()
+        if stopping.is_set():
+            # shutdown() already handled cleanup + process exit.
+            return
+        # The server thread ended on its own, without a shutdown signal -
+        # i.e. it crashed after a successful startup (already logged by
+        # _watch_server_thread above). Exit non-zero so a hosting
+        # platform's own restart policy notices, the same reasoning the
+        # bot-failure path below already applies.
+        sys.exit(1)
 
     monitor_threads = [
         threading.Thread(

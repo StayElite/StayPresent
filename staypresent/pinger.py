@@ -13,6 +13,7 @@ Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
 # Copyright (c) 2026 Ashish Sharma (Stay Elite)
 # Licensed under the MIT License. See the LICENSE file for details.
 
+import ipaddress
 import logging
 import threading
 import time
@@ -55,6 +56,64 @@ def _prune_cron_registry():
             _cron_registry.discard(h)
 
 
+def _is_ipv6_literal(host: str) -> bool:
+    """
+    True if `host` (already stripped of any surrounding "[...]" brackets)
+    is a literal IPv6 address, e.g. "::1" or "2001:db8::1" - as opposed to
+    a hostname or an IPv4 address. Used both to recognize the bracketed
+    "[host]:port" form below and, in `_build_url`, to decide whether the
+    final URL's authority component needs to be bracket-wrapped: per RFC
+    3986, a literal IPv6 address in a URL is only unambiguous (especially
+    once a ":port" follows it) when enclosed in "[...]" - a bare
+    "::1:8080" is indistinguishable from an IPv6 address with an extra
+    hextet and is not something a URL parser (or a browser) will treat as
+    "host ::1, port 8080".
+    """
+    try:
+        ipaddress.IPv6Address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _split_embedded_port(host: str):
+    """
+    If `host` is a bare "host:port" string (e.g. "localhost:5000") - the
+    format `ping()`/`cron()`'s own docstrings document as a valid `host`
+    on its own - split it into (host_without_port, port). Also recognizes
+    the bracketed IPv6 forms "[host]:port" (e.g. "[::1]:8080") and
+    "[host]" (e.g. "[::1]", no port) - the only unambiguous way to pair a
+    literal IPv6 address with a port, and returns the address with its
+    brackets stripped either way (`_build_url` re-adds them itself, via
+    `_is_ipv6_literal`, once it's settled on the final target host).
+
+    Returns (host, None) for anything else, in particular a plain
+    hostname/IP with no port ("example.com"), or a bare, unbracketed IPv6
+    literal ("::1", "::"), which always contains more than one ":" and
+    must NOT be split apart here (there is no port to extract, and doing
+    so would mangle the address).
+    """
+    if host.startswith("["):
+        closing = host.find("]")
+        if closing == -1:
+            return host, None
+        candidate_host = host[1:closing]
+        rest = host[closing + 1:]
+        if not _is_ipv6_literal(candidate_host):
+            return host, None
+        if rest == "":
+            return candidate_host, None
+        if rest.startswith(":") and rest[1:].isdigit():
+            return candidate_host, int(rest[1:])
+        return host, None
+    if host.count(":") != 1:
+        return host, None
+    candidate_host, candidate_port = host.split(":", 1)
+    if candidate_host and candidate_port.isdigit():
+        return candidate_host, int(candidate_port)
+    return host, None
+
+
 def _build_url(host: str, port: int = None, path: str = "/", https: bool = None) -> str:
     if not isinstance(host, str):
         raise TypeError(f"staypresent.ping()/cron(): 'host' must be a str, got {type(host).__name__}.")
@@ -76,6 +135,33 @@ def _build_url(host: str, port: int = None, path: str = "/", https: bool = None)
             )
         return host
 
+    # A bare "host:port" string (e.g. "localhost:5000"), or a bracketed
+    # IPv6 form ("[::1]:8080", "[::1]") - split the embedded port out (and
+    # strip any brackets) *before* any of the logic below, so both the
+    # https-default detection (target_host in _LOCAL_HOSTS/_ANY_HOSTS) and
+    # the final URL are computed from the actual host, not the combined
+    # "host:port"/"[host]" string. Left unsplit (as this used to be),
+    # "localhost:5000" was never recognized as local (it isn't a member of
+    # _LOCAL_HOSTS as a whole string), so it silently defaulted to https
+    # instead of http - and if a `port=` argument was *also* passed, it was
+    # appended on top of the already-embedded one, producing a broken URL
+    # like "https://localhost:5000:8080/". Always reassigning `host` here
+    # (not just when a port was actually found) also correctly strips a
+    # bracketed IPv6 host's own "[...]" even when it has no embedded port
+    # (e.g. "[::1]" -> "::1") - `_split_embedded_port` returns the host
+    # unchanged for every case that isn't one of these, so this is a no-op
+    # for a plain hostname/IPv4 address/bare IPv6 literal.
+    embedded_host, embedded_port = _split_embedded_port(host)
+    if embedded_port is not None and port is not None and port != embedded_port:
+        logger.warning(
+            "staypresent.ping()/cron(): 'host' (%s) already specifies a port - "
+            "the 'port' argument (%s) is ignored.",
+            host, port,
+        )
+    if embedded_port is not None:
+        port = embedded_port
+    host = embedded_host
+
     # "0.0.0.0" / "::" is a *bind* address, not something you can send an
     # outgoing request to on every platform - treat it as "this machine".
     target_host = "127.0.0.1" if host in _ANY_HOSTS else host
@@ -89,7 +175,15 @@ def _build_url(host: str, port: int = None, path: str = "/", https: bool = None)
         https = target_host not in _LOCAL_HOSTS
 
     scheme = "https" if https else "http"
-    netloc = f"{target_host}:{port}" if port else target_host
+    # A literal IPv6 address must be bracket-wrapped in a URL's authority
+    # component (RFC 3986) - both to be valid at all on its own ("::1" is
+    # not a legal "host" token in a URL) and, critically, to stay
+    # unambiguous once a ":port" is appended ("::1:8080" parses as a
+    # *different*, longer IPv6 address, not "host ::1, port 8080" - which
+    # is exactly what urllib/requests would then try, and fail, to
+    # connect to). An IPv4 address or an ordinary hostname is used as-is.
+    netloc_host = f"[{target_host}]" if _is_ipv6_literal(target_host) else target_host
+    netloc = f"{netloc_host}:{port}" if port else netloc_host
 
     if not path.startswith("/"):
         path = "/" + path

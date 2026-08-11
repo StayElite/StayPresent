@@ -15,49 +15,67 @@
 
 ### 🛖 About
 
-A lightweight Python package that keeps your bots and background scripts alive by running a dedicated Flask web server alongside your main application(s).
+**StayPresent** is a lightweight Python utility for keeping bots, workers, and background scripts running reliably on hosts that expect an active HTTP service.
 
-Perfect for deploying on platforms like **Render**, **Railway**, **Koyeb**, **Heroku**, or any host that requires an active HTTP port to keep your service running.
+It runs a dedicated Flask web server alongside your application, monitors your processes, automatically restarts crashed workers, and can detect processes that are still running but have become stuck using a simple heartbeat system.
 
-📖 **This README covers the essentials.** For the full guide — every parameter, every `staypresent.web` option, deployment notes, and a detailed FAQ — see **[DOCUMENTATION.md](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md)**. Release notes live in **[CHANGELOG.md](https://github.com/StayElite/StayPresent/blob/main/CHANGELOG.md)**.
+It also includes a **built-in status dashboard** at `/status`, giving you uptime, restart counts, service states, and recent incidents without requiring a separate monitoring service.
+
+Whether you need **a bot, a web server, or both**, StayPresent keeps the setup simple.
+
+It supports running multiple bots under a single service, with each process monitored and restarted independently.
+
+> Designed for platforms such as **Render, Railway, Koyeb, Heroku**, and other hosts that expect applications to keep an HTTP port open.
+
+📖 **This README covers the essentials.**
+For the complete configuration reference, deployment guide, web settings, process management, and FAQ, see the [full documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.mdd).
+
+For release notes and changes, see the [changelog](https://github.com/StayElite/StayPresent/blob/main/CHANGELOG.mdd).
 
 ---
 
 ## ✨ Features
 
-* **Zero-Friction Setup:** Get running with one line of code.
-* **Production-Ready by Default:** Automatically uses `waitress` when installed, avoiding Flask's "development server" warning.
-* **Multiple Bot Support:** Run several bot processes side-by-side under one web server, each monitored and restarted independently.
-* **Package-Aware Bot Launching:** Launch a bot that lives inside a package (and needs relative imports) as a proper module via `bot_module`.
-* **Auto-Restarts & Crash Recovery:** Automatically respawns a crashed bot process, with configurable delay and consecutive-crash budget, per bot.
-* **Flexible Responses:** Serve plain text, JSON (default), full HTML templates, or rendered Markdown.
-* **Built-in Markdown Renderer — Zero Extra Dependencies:** Headings, emphasis, links, images, nested lists (including task-list checkboxes), tables, code blocks, raw HTML passthrough, and a GitHub-flavored stylesheet, with no `markdown` package required.
-* **Light / Dark / Auto Theming:** Markdown pages can follow the visitor's OS preference or be forced to `light`/`dark`.
-* **Custom Paths, Multiple Responses:** Host more than one response at once, at different paths (e.g. `/`, `/status`, `/dashboard`).
-* **Static Asset Serving:** CSS, JS, images, and favicons next to your HTML/Markdown files are served automatically.
-* **Optional Self-Ping / Keep-Warm:** Periodically ping your own public URL to stop free-tier hosts spinning your service down — off by default.
-
-See **[DOCUMENTATION.md](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md)** for the full feature list, including advanced process control and fail-safe logging.
+* **Zero-Friction Setup** — Start monitoring a bot with a single line of code.
+* **Automatic Crash Recovery** — Automatically restart crashed processes with configurable delays and crash limits.
+* **Hang Detection** — Detect processes that are running but frozen or deadlocked with `staypresent.heartbeat()`.
+* **Built-in Status Dashboard** — Monitor uptime, process state, restart counts, and recent incidents at `/status`.
+* **Multiple Bot Support** — Run and monitor multiple bots independently under one service.
+* **Package-Aware Launching** — Launch bots located inside Python packages using relative imports with `bot_module`.
+* **Production-Friendly Server** — Automatically uses `waitress` when available instead of Flask's development server.
+* **Flexible Deployment** — Run bots without a web server, a web server without bots, or both together.
+* **Custom HTTP Responses** — Serve plain text, JSON, HTML templates, or Markdown.
+* **Built-in Markdown Rendering** — Render headings, lists, tables, code blocks, and GitHub-style Markdown without additional dependencies.
+* **Theming Support** — Choose light, dark, or automatic OS-based themes.
+* **Custom Routes** — Register multiple pages such as `/`, `/status`, `/dashboard`, or `/changelog`.
+* **Static Assets** — Serve CSS, JavaScript, images, and favicons automatically, with configurable exclusions.
+* **Optional Self-Ping** — Periodically ping your public URL to help prevent free-tier hosts from putting your service to sleep.
 
 ---
 
 ## 📦 Installation
 
+Install StayPresent with pip:
+
 ```bash
 pip install staypresent
 ```
 
-**Recommended for production** — installs [`waitress`](https://pypi.org/project/waitress/) to suppress Flask's dev-server warning:
+### Production installation
+
+For production deployments, install the optional `waitress` dependency:
 
 ```bash
-pip install staypresent[prod]
+pip install "staypresent[prod]"
 ```
 
-If `waitress` isn't installed, StayPresent falls back to Flask's built-in server and logs a one-time warning — everything else (Markdown rendering, theming, tables, etc.) works with no extra dependencies either way.
+This allows StayPresent to use Waitress instead of Flask's development server.
 
 ---
 
 ## 🚀 Quickstart
+
+The simplest setup requires only one line:
 
 ```python
 import staypresent
@@ -65,85 +83,245 @@ import staypresent
 staypresent.run("bot.py")
 ```
 
-That's it. This starts a background web server (`0.0.0.0:8080`, serving `{"message": "I'm Present"}` at `/`) and runs `bot.py` alongside it, automatically restarting it if it ever crashes.
+StayPresent will launch your bot and provide a web service with a built-in status page.
 
 ### A more complete example
 
 ```python
 import staypresent
 
-staypresent.web.markdown("CHANGELOG.md")   # render a status/changelog page at "/"
+staypresent.web.markdown(
+    "CHANGELOG.md",
+    path="/changelog",
+    status=True,
+)
+
+staypresent.web.status(
+    title="Groundflare Bot Status",
+)
+
 staypresent.run(
     "bot.py",
     host="0.0.0.0",
     port=5000,
     threads=8,
+    heartbeat_timeout=30,
 )
 ```
 
-Every `staypresent.web` function (`text`, `json`, `html`, `markdown`) accepts a `path=` argument, so you can host several independent responses — e.g. a JSON status at `/`, a dashboard at `/dashboard`, a changelog at `/changelog` — all from the same server. See **[Custom Paths & Multiple Responses](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#35-custom-paths--multiple-responses)** for the details.
+---
+
+## 📊 Built-in Status Page
+
+StayPresent automatically provides a live status page at:
+
+```text
+/status
+```
+
+For example:
+
+```python
+import staypresent
+
+staypresent.run("bot.py")
+```
+
+You can customize the status page:
+
+```python
+staypresent.web.status(
+    title="Groundflare Bot Status",
+    copyright="Groundflare Inc.",
+    footer_links=[
+        {
+            "label": "Support",
+            "url": "https://support.groundflare/support",
+        }
+    ],
+    mode="dark",
+)
+```
+
+The status page can display information such as:
+
+* Current service state
+* Uptime
+* Restart count
+* Recent incidents
+* Process health
+
+No external monitoring service is required.
 
 ---
 
 ## 🤖 Running Multiple Bots
 
+StayPresent can monitor multiple bot processes independently:
+
 ```python
 import staypresent
 
-staypresent.run(["telegram_bot.py", "discord_bot.py"])
+staypresent.run([
+    "telegram_bot.py",
+    "discord_bot.py",
+])
 ```
 
-Each bot is supervised and restarted independently. For per-bot arguments/environment, or for a bot that needs `python -m` (package-relative imports), use `bots=[...]` / `bot_module=...` — see **[Process Execution](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#4-process-execution-staypresentrun)** for the full reference.
+Each process is monitored separately and can be restarted independently if it crashes.
+
+This makes it possible to host several bots under a single web service.
+
+---
+
+## 💓 Hang Detection
+
+A process can be technically "running" while being completely stuck.
+
+StayPresent provides a heartbeat mechanism for detecting this situation.
+
+### Worker
+
+```python
+# worker.py
+
+import staypresent
+
+while True:
+    staypresent.heartbeat()
+    do_work()
+```
+
+### Application
+
+```python
+# app.py
+
+import staypresent
+
+staypresent.run(
+    "worker.py",
+    heartbeat_timeout=30,
+)
+```
+
+If the worker stops sending heartbeats for longer than the configured timeout, StayPresent can treat it as unhealthy and restart it.
 
 ---
 
 ## 📡 Self-Ping / Keep-Warm
 
+Some hosting platforms may suspend services that receive little or no traffic.
+
+StayPresent includes an optional recurring HTTP ping:
+
 ```python
 import staypresent
 
-handle = staypresent.cron("https://my-bot.onrender.com", interval=300)  # every 5 minutes
+handle = staypresent.cron(
+    "https://my-bot.onrender.com",
+    interval=300,
+)
+
 staypresent.run("bot.py")
 ```
 
-Fully optional, off by default. See **[Self-Ping / Keep-Warm](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#5-self-ping--keep-warm-staypresentping--staypresentcron)**.
+This sends a request every 300 seconds.
+
+> Keep-warm behavior depends on your hosting provider's policies and should only be used where permitted by their terms.
 
 ---
 
-## ⚙️ API Reference (quick glance)
+## 🌐 Web Server
 
-| | |
-| --- | --- |
-| `staypresent.run(bot_file=None, host="0.0.0.0", port=8080, ...)` | Launch your bot(s) alongside the web server. |
-| `staypresent.web.text/json/html/markdown(..., path="/")` | Register a response at a path. |
-| `staypresent.web.remove/get/get_all/paths()` | Inspect or remove registered responses. |
-| `staypresent.ping(host, ...)` | Send a single one-off HTTP ping. |
-| `staypresent.cron(host, ...)` | Start a recurring background ping (`CronHandle`). |
-| `staypresent.active_cron_handles()` | List every currently-running cron pinger. |
+StayPresent can also be used without running a bot.
 
-Every parameter, default, and validation rule is documented in full in **[API Reference](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#8-api-reference)** of DOCUMENTATION.md, along with **[Process Execution](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#4-process-execution-staypresentrun)** (crash recovery, multi-bot, `bot_module`) and **[Web Server Configuration](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#3-web-server-configuration-staypresentweb)** (all response types, theming, static assets).
+You can build a lightweight HTTP service with custom responses, pages, Markdown, status dashboards, and static assets.
 
-A built-in `/health` endpoint (`{"status": "ok"}`) is available out of the box for uptime monitors — see **[Built-in Health Check](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#6-built-in-health-check)**.
+For example, you can expose multiple routes:
+
+```text
+/
+├── /status
+├── /dashboard
+└── /changelog
+```
+
+This makes StayPresent useful not only for bots, but also for lightweight background services and workers that need an HTTP endpoint.
+
+---
+
+## 🧩 API Overview
+
+| API                       | Description                                     |
+| ------------------------- | ----------------------------------------------- |
+| `staypresent.run(...)`    | Launch one or more bots, a web server, or both. |
+| `staypresent.heartbeat()` | Signal that a monitored process is still alive. |
+| `staypresent.web.*`       | Register HTTP responses and pages.              |
+| `staypresent.ping(...)`   | Send a single HTTP ping.                        |
+| `staypresent.cron(...)`   | Schedule recurring background HTTP pings.       |
+
+For the complete API and configuration reference, see the [documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.mdd).
 
 ---
 
 ## 🛠 Requirements
 
-* Python 3.8+
-* Flask
-* `waitress` *(optional, recommended for production — `pip install staypresent[prod]`)*
-
-Markdown rendering, theming, and tables work with **no additional dependencies** — StayPresent ships its own built-in Markdown-to-HTML renderer.
+* `Python` **`3.8+`**
+* `Flask`
+* `waitress` — optional, but recommended for production deployments
 
 ---
 
-## 💡 Use Cases
+## ☁️ Deployment
 
-* Keeping a Discord/Telegram/Slack bot alive on a free-tier host that requires an open HTTP port.
-* Running several bots (e.g. a Telegram bot *and* a Discord bot) from a single deployed service.
-* Exposing a lightweight status page, uptime dashboard, or `CHANGELOG.md` viewer for a background worker.
-* Giving a hosting platform's health-check probe something to hit while your real work happens in a separate process.
+StayPresent is particularly useful on platforms that expect your application to expose an HTTP port, including:
+
+* **Render**
+* **Railway**
+* **Koyeb**
+* **Heroku**
+* Other platforms that require a long-running HTTP service
+
+A typical deployment can run your bot and web server together:
+
+```python
+import staypresent
+
+staypresent.run(
+    "bot.py",
+    host="0.0.0.0",
+    port=5000,
+)
+```
+
+This allows the hosting platform to detect an active HTTP service while StayPresent manages your background process.
 
 ---
 
-📖 For everything else — full parameter tables, deployment notes, and an FAQ covering restarts, path collisions, `bot_module`, and more — see **[DOCUMENTATION.md](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md)**.
+## 📚 Documentation
+
+* **[Full Documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.mdd)** — Configuration, deployment, web settings, process management, and FAQ.
+* **[Changelog](https://github.com/StayElite/StayPresent/blob/main/CHANGELOG.mdd)** — Releases and changes.
+
+---
+
+## ❤️ Why StayPresent?
+
+Running a bot on a hosting platform shouldn't require a complicated monitoring stack.
+
+StayPresent combines:
+
+**Process management + crash recovery + heartbeat monitoring + HTTP server + status dashboard**
+
+into a single lightweight Python package.
+
+```python
+import staypresent
+
+staypresent.run("bot.py")
+```
+
+That's the idea behind StayPresent:
+
+> **Keep your process present. Keep your service alive.**
