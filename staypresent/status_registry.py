@@ -21,9 +21,27 @@ Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
 
 import collections
 import copy
+import datetime as _datetime
 import os
 import threading
 import time
+
+# zoneinfo is stdlib from Python 3.9 onward - StayPresent otherwise has no
+# runtime dependencies beyond Flask (see pyproject.toml), so this is kept
+# optional rather than a hard requirement: `resolve_timezone()`/`_tzinfo()`
+# below only ever need it for a non-UTC `timezone=` - the default ("UTC")
+# never touches this at all, via `_datetime.timezone.utc` directly. On a
+# bare Python 3.8 install with a non-UTC timezone requested,
+# `resolve_timezone()` raises a clear error explaining the options instead
+# of an opaque ImportError surfacing from deep inside this module.
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:  # Python < 3.9
+    try:
+        from backports.zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
+    except ImportError:
+        ZoneInfo = None
+        ZoneInfoNotFoundError = LookupError
 
 _lock = threading.Lock()
 _bots = {}  # index -> live state dict, see reset() below
@@ -696,11 +714,11 @@ def mark_clean_exit(index: int) -> None:
         # reflects that this bot is no longer running.
 
 
-def _display_name(file_key, override: dict, fallback_display_name: str = None, is_module: bool = False, bot_id: int = None) -> str:
+def _display_name(file_key, override: dict, fallback_display_name: str = None, is_module: bool = False) -> str:
     name = override.get("name") if override else None
     if name:
         return name
-    
+
     if fallback_display_name is not None:
         # A real bot: fallback_display_name is runner.py's own
         # already-disambiguated identifier (see reset()) - the short
@@ -711,33 +729,215 @@ def _display_name(file_key, override: dict, fallback_display_name: str = None, i
             # A dotted module path (e.g. "mypkg.worker") has no file
             # extension to strip - shown as-is instead.
             return f"{fallback_display_name} - Worker"
-        
+
         stem = os.path.splitext(os.path.basename(fallback_display_name))[0] or fallback_display_name
         parent = os.path.basename(os.path.dirname(file_key)) if file_key else ""
         return f"{parent}/{stem} - Worker" if parent else f"{stem} - Worker"
-        
-    if not file_key:
-        # Unique identifier for the ultimate fallback, preventing multiple 
-        # completely unknown entries from blending together.
-        if bot_id is not None:
-            return f"Service (Unknown ID: {bot_id})"
-        return "Service (Unknown)"
-        
+
     # Unlike fallback_display_name above (always a real bot's own
     # filename/module path), this file_key is an arbitrary label the
     # developer chose for a `services=` entry with no matching bot - e.g.
     # "api.example.com" or a hierarchical key like "us-east/database".
-    # By returning file_key unmodified, we skip os.path.basename() and 
-    # ensure custom hierarchical naming structures remain fully intact.
+    # Returned unmodified (no os.path.basename()) so a hierarchical key
+    # like "us-east/database" is shown as given, not truncated down to
+    # just "database". update_service_override() already rejects an
+    # empty/non-str key, and every real bot's file_key is guaranteed
+    # non-empty by staypresent.run()'s own validation, so file_key is
+    # never falsy here.
     return file_key
 
 
-def _format_time(ts: float) -> str:
-    return time.strftime("%b %d, %Y at %I:%M %p UTC", time.gmtime(ts))
+# A handful of common, low-ambiguity abbreviations resolved to a single
+# specific IANA zone, purely as a convenience shorthand for
+# `staypresent.web.status(timezone=...)` - e.g. `timezone="IST"` ->
+# "Asia/Kolkata". This is deliberately NOT a general abbreviation table:
+# several common abbreviations are genuinely ambiguous across regions
+# ("IST" alone could mean India, Israel, or Irish Standard Time; "CST"
+# could mean US Central, China, or Cuba Standard Time) - StayPresent
+# picks one specific, common meaning for each entry here rather than
+# guessing, and documents that choice below so it's never a silent
+# surprise. Anything not listed here, or any case where the alias below
+# isn't the region actually meant, should be given as a real IANA zone
+# key instead (e.g. "America/Chicago", "Asia/Shanghai"), which
+# `resolve_timezone()` below always accepts unmodified - see
+# https://en.wikipedia.org/wiki/List_of_tz_database_time_zones for the
+# full list.
+_TIMEZONE_ALIASES = {
+    "UTC": "UTC",
+    "GMT": "UTC",
+    "IST": "Asia/Kolkata",
+    "EST": "America/New_York",
+    "EDT": "America/New_York",
+    "CST": "America/Chicago",
+    "CDT": "America/Chicago",
+    "MST": "America/Denver",
+    "MDT": "America/Denver",
+    "PST": "America/Los_Angeles",
+    "PDT": "America/Los_Angeles",
+    "BST": "Europe/London",
+    "CET": "Europe/Paris",
+    "JST": "Asia/Tokyo",
+    "AEST": "Australia/Sydney",
+}
 
 
-def _format_log_line(entry: dict) -> str:
-    stamp = time.strftime("%H:%M:%S", time.gmtime(entry["time"]))
+def resolve_timezone(name: str, caller: str = "staypresent") -> str:
+    """
+    Validate and normalize a `timezone=` value (see
+    `staypresent.web.status()`) into either "auto" or a real IANA zone
+    key ("UTC", "Asia/Kolkata", ...) that `_tzinfo()` below (and so every
+    time this module renders server-side) can use.
+
+    Accepts:
+      - "auto" (case-insensitive, the default) - returned as-is. There's
+        no IANA zone to resolve for this: it means "whatever the
+        browser's own local timezone is", which varies per visitor and
+        so can only ever be resolved client-side, in the status page's
+        own JS (see status_assets.py's resolveTimeZone()) - not here.
+        Server-side rendering (e.g. this route's JSON data endpoint,
+        for a non-browser API consumer) falls back to UTC for "auto",
+        same as _tzinfo() below.
+      - A real IANA zone key as-is (e.g. "Asia/Kolkata",
+        "America/New_York").
+      - One of the small set of common abbreviations in
+        `_TIMEZONE_ALIASES` above (case-insensitive) as convenient
+        shorthand - see that table's own docstring for why it's
+        intentionally short and what to do if the region you meant
+        isn't in it.
+
+    Raises:
+        TypeError: if `name` isn't a str.
+        ValueError: if `name` is neither "auto", a recognized alias, nor
+            a valid IANA zone key - including on a Python < 3.9 install
+            with neither the stdlib `zoneinfo` module nor the
+            `backports.zoneinfo` package available and a non-UTC,
+            non-"auto" zone requested, since there's then no timezone
+            database to validate (or later render) it with at all.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise TypeError(f"{caller}: 'timezone' must be a non-empty str, got {name!r}.")
+    raw = name.strip()
+
+    if raw.upper() == "AUTO":
+        return "auto"
+
+    candidate = _TIMEZONE_ALIASES.get(raw.upper(), raw)
+
+    if candidate.upper() == "UTC":
+        # Never needs `zoneinfo` at all (see _tzinfo() below) - so a
+        # project that only ever uses the default "auto" (or an
+        # explicit "UTC") timezone works unmodified even on a bare
+        # Python 3.8 install with no zoneinfo backport installed.
+        return "UTC"
+
+    if ZoneInfo is None:
+        raise ValueError(
+            f"{caller}: timezone={name!r} requires the 'zoneinfo' module, which isn't "
+            "available on this Python install (zoneinfo is stdlib from Python 3.9 onward). "
+            "Either upgrade to Python 3.9+, install the 'backports.zoneinfo' package "
+            "(plus, on Windows, 'tzdata'), or leave 'timezone' unset (it defaults to "
+            "\"auto\", which - along with \"UTC\" - never needs zoneinfo at all)."
+        )
+    try:
+        ZoneInfo(candidate)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(
+            f"{caller}: timezone={name!r} is not a recognized timezone. Use \"auto\" (the "
+            "default - follows each visitor's own browser timezone), a standard IANA zone "
+            "key (e.g. \"Asia/Kolkata\", \"America/New_York\", \"Europe/London\" - see "
+            "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones), or one of these "
+            f"short aliases: {', '.join(sorted(_TIMEZONE_ALIASES))}. If this already looks like "
+            "a valid IANA key, your system may be missing timezone data - try "
+            "`pip install tzdata`."
+        ) from exc
+    return candidate
+
+
+# Accepted spellings of the two supported clock styles, normalized to
+# "12h"/"24h". Intentionally generous (with/without "h", with/without
+# trailing "s", bare digits) since there's no ambiguity to worry about
+# here the way there is with timezone abbreviations - "24" only ever
+# means one thing.
+_TIME_FORMAT_ALIASES = {
+    "12H": "12h", "12HR": "12h", "12HRS": "12h", "12": "12h", "12-HOUR": "12h",
+    "24H": "24h", "24HR": "24h", "24HRS": "24h", "24": "24h", "24-HOUR": "24h",
+}
+
+
+def resolve_time_format(value: str, caller: str = "staypresent") -> str:
+    """
+    Validate and normalize a `time_format=` value (see
+    `staypresent.web.status()`) into "12h" or "24h".
+
+    Raises:
+        TypeError: if `value` isn't a str.
+        ValueError: if `value` isn't a recognized spelling of either
+            clock style (see `_TIME_FORMAT_ALIASES` above for what's
+            accepted).
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError(f"{caller}: 'time_format' must be a non-empty str, got {value!r}.")
+    resolved = _TIME_FORMAT_ALIASES.get(value.strip().upper())
+    if resolved is None:
+        raise ValueError(
+            f"{caller}: time_format={value!r} is not recognized - use \"12h\" (the default) "
+            "or \"24h\"."
+        )
+    return resolved
+
+
+def _tzinfo(tz_name: str):
+    """
+    Real `tzinfo` object for a `timezone` value that's already been
+    validated by `resolve_timezone()` above. "UTC" and "auto" are both
+    special-cased to `datetime.timezone.utc` directly rather than
+    `ZoneInfo("UTC")`: "auto" means "the visitor's own browser
+    timezone", which only the status page's own client-side JS can ever
+    actually resolve (see status_assets.py's resolveTimeZone()) - this
+    module rendering server-side (e.g. for a non-browser API consumer of
+    the JSON data endpoint) has no visitor to ask, so it falls back to
+    UTC, same as if "UTC" had been configured explicitly. Either way,
+    the (by far) most common case - a status page left on its default
+    timezone - never needs `zoneinfo` to be importable at all, even on a
+    bare Python 3.8 install.
+    """
+    if not tz_name or tz_name in ("UTC", "auto"):
+        return _datetime.timezone.utc
+    return ZoneInfo(tz_name)
+
+
+def current_year(tz_name: str = "UTC") -> str:
+    """The current year (as a 4-digit str) in `tz_name` - used for a
+    status page's copyright line (see server.py's _render_status_page),
+    so a page configured for a timezone far from UTC doesn't show last
+    year's date for the first/last few hours of a new year in its own
+    local time. ("auto" falls back to UTC here - see _tzinfo() above -
+    since the copyright line is baked into the page's initial HTML on
+    the server, before any client-side JS has had a chance to run.)"""
+    return _datetime.datetime.now(_tzinfo(tz_name)).strftime("%Y")
+
+
+def _format_time(ts: float, tz_name: str = "UTC", time_format: str = "12h") -> str:
+    dt = _datetime.datetime.fromtimestamp(ts, tz=_tzinfo(tz_name))
+    clock = dt.strftime("%H:%M") if time_format == "24h" else dt.strftime("%I:%M %p")
+    # dt.tzname() asks the zone itself for its current abbreviation
+    # (e.g. "IST" for Asia/Kolkata, "PST"/"PDT" for America/Los_Angeles
+    # depending on the time of year) rather than this module hardcoding
+    # one - correct even for a zone that observes daylight saving time,
+    # where a fixed abbreviation would be wrong for half the year. For
+    # "auto", this is only ever the UTC fallback described in _tzinfo()
+    # above - a real per-visitor abbreviation is up to the page's own
+    # client-side JS, which recomputes this string itself from the raw
+    # epoch timestamp this snapshot also includes alongside it.
+    # Concatenated after strftime() rather than embedded in the format
+    # string itself, so an abbreviation can never be misread as a
+    # strftime directive.
+    return dt.strftime("%b %d, %Y at") + f" {clock} {dt.tzname() or tz_name}"
+
+
+def _format_log_line(entry: dict, tz_name: str = "UTC", time_format: str = "12h") -> str:
+    dt = _datetime.datetime.fromtimestamp(entry["time"], tz=_tzinfo(tz_name))
+    stamp = dt.strftime("%H:%M:%S") if time_format == "24h" else dt.strftime("%I:%M:%S %p")
     if entry["stream"] == "stderr":
         return f"{stamp} [stderr] {entry['line']}"
     return f"{stamp} {entry['line']}"
@@ -778,7 +978,9 @@ def _incident_title(inc: dict, admin: bool) -> str:
     return "Service disruption detected"
 
 
-def snapshot(admin: bool = False, incident_limit: int = None) -> dict:
+def snapshot(
+    admin: bool = False, incident_limit: int = None, timezone: str = "UTC", time_format: str = "12h",
+) -> dict:
     """
     Build a JSON-serializable snapshot for the status page's data endpoint:
     overall status, one entry per known bot (plus any extra static entries
@@ -822,6 +1024,28 @@ def snapshot(admin: bool = False, incident_limit: int = None) -> dict:
     recent first); defaults to _MAX_INCIDENTS_DISPLAYED (the normal
     "recent activity" view). Pass a larger value (up to
     _MAX_INCIDENTS_HISTORY) for the status page's "full history" view.
+
+    `timezone`/`time_format` are this route's own
+    `staypresent.web.status(timezone=..., time_format=...)` values
+    ("auto"/an IANA zone key, and "12h"/"24h" respectively) - already
+    validated by `resolve_timezone()`/`resolve_time_format()` at
+    registration time, so both are trusted as-is here rather than
+    re-validated on every single poll.
+
+    Every incident keeps its raw `"time"` (Unix epoch seconds) alongside
+    a server-rendered `"time_display"` string, and (for an admin
+    snapshot) every log entry is `{"time", "stream", "line", "display"}`
+    rather than a single pre-joined string - "display"/"time_display"
+    render in `timezone` (UTC, for "auto" - a fixed server process has
+    no visitor to ask, so true per-visitor "auto" resolution only ever
+    happens client-side; see status_assets.py's resolveTimeZone()) and
+    `time_format`, as a reasonable default for e.g. a non-browser API
+    consumer of this JSON - while the raw epoch lets the status page's
+    own JS re-render every one of them in the actual visitor's local
+    timezone (and their chosen clock style) instead. `timezone` and
+    `time_format` are also echoed back directly in the response itself
+    (as `"timezone"`/`"time_format"`) so that JS has what it needs to do
+    so without either being templated in separately.
     """
     with _lock:
         services_override = copy.deepcopy(_global_service_overrides)
@@ -945,8 +1169,7 @@ def snapshot(admin: bool = False, incident_limit: int = None) -> dict:
             representative_name = ", ".join(name for name, _ in route_labels)
             new_indices = range(first_new_index, len(services))
         else:
-            # ---> PASS THE BOT ID (i) HERE <---
-            name = _display_name(file_key, override, bot.get("display_name"), bot.get("is_module", False), bot_id=i)
+            name = _display_name(file_key, override, bot.get("display_name"), bot.get("is_module", False))
             services.append(_build_service_entry(name, override.get("description")))
             representative_name = name
             new_indices = range(len(services) - 1, len(services))
@@ -960,7 +1183,23 @@ def snapshot(admin: bool = False, incident_limit: int = None) -> dict:
             # slice here. Attached to every row just added for this bot
             # (there's only one underlying log, shared by every route a
             # single web-server thread happens to be expanded into).
-            formatted_log = [_format_log_line(entry) for entry in bot["log"]]
+            #
+            # Each entry keeps its raw "time"/"stream"/"line" alongside a
+            # server-rendered "display" string (same as an incident's
+            # "time"/"time_display" pair below) - the status page's own
+            # JS re-renders "display" itself from the raw fields, in the
+            # visitor's actual local timezone/clock style; "display" is
+            # there as a ready-to-use fallback for anything reading this
+            # JSON directly.
+            formatted_log = [
+                {
+                    "time": entry["time"],
+                    "stream": entry["stream"],
+                    "line": entry["line"],
+                    "display": _format_log_line(entry, timezone, time_format),
+                }
+                for entry in bot["log"]
+            ]
             for idx in new_indices:
                 services[idx]["log"] = formatted_log
 
@@ -986,10 +1225,9 @@ def snapshot(admin: bool = False, incident_limit: int = None) -> dict:
     for file_key, override in services_override.items():
         if file_key in matched_keys:
             continue
-        
+
         status = "operational"
         services.append({
-            # ---> NO BOT ID NEEDED HERE (file_key is guaranteed truthy by update_service_override) <---
             "name": _display_name(file_key, override),
             "description": (override or {}).get("description") or "",
             "status": status,
@@ -1001,7 +1239,10 @@ def snapshot(admin: bool = False, incident_limit: int = None) -> dict:
     total_incidents = len(all_incidents)
     all_incidents = all_incidents[:incident_limit]
     for inc in all_incidents:
-        inc["time_display"] = _format_time(inc.pop("time"))
+        # "time" (raw epoch) is deliberately kept, not popped, alongside
+        # "time_display" - see this function's own docstring above for
+        # why both are sent.
+        inc["time_display"] = _format_time(inc["time"], timezone, time_format)
 
     return {
         "overall_status": overall,
@@ -1013,4 +1254,14 @@ def snapshot(admin: bool = False, incident_limit: int = None) -> dict:
         "total_incidents": total_incidents,
         "generated_at": now,
         "admin": admin,
+        # Echoed back so the page's own JS (a static, shared asset - see
+        # server.py's _SHARED_STATUS_JS_PATH) can render every timestamp
+        # on the page - "Last updated", each incident, each admin log
+        # line - the same way it already adopts poll_seconds from this
+        # response rather than needing any of these templated into the
+        # JS file itself. "auto" tells that JS to use the visitor's own
+        # browser timezone instead of a fixed one - see
+        # status_assets.py's resolveTimeZone().
+        "timezone": timezone,
+        "time_format": time_format,
     }

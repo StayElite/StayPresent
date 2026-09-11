@@ -17,7 +17,10 @@ Licensed under the MIT License. See the LICENSE file for details.
 
 from .runner import run, heartbeat
 from .pinger import ping, cron, active_cron_handles
+from .service import restart
 from . import web
 
-__version__ = "1.6.0"
-__all__ = ["run", "heartbeat", "web", "ping", "cron", "active_cron_handles", "__version__"]
+__version__ = "1.7.0"
+__all__ = [
+    "run", "heartbeat", "web", "ping", "cron", "active_cron_handles", "restart", "__version__",
+]

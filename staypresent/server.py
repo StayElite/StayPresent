@@ -273,7 +273,7 @@ def _status_admin_authorized(state: dict) -> bool:
     return False
 
 
-def _render_status_page(state: dict, route_path: str) -> Response:
+def _render_status_page(state: dict) -> Response:
     # mode="dark" / "light" forces that color scheme regardless of the
     # visitor's OS/browser preference; "auto" (the default) follows it -
     # same convention as _render_markdown_file() above.
@@ -309,7 +309,15 @@ def _render_status_page(state: dict, route_path: str) -> Response:
     og_tags.append(f'<meta property="og:description" content="{esc_description}">')
 
     if state.get("copyright"):
-        year = time.strftime("%Y")
+        # In this route's own configured timezone (default "auto" -
+        # each visitor's own browser timezone; falls back to UTC here
+        # specifically, since this HTML is rendered once on the server
+        # before any client-side JS runs - see
+        # status_registry.current_year()) - so a status page configured
+        # for a fixed zone far from UTC doesn't show last year's date
+        # for the first/last few hours of a new year in its own local
+        # time.
+        year = status_registry.current_year(state.get("timezone", "auto"))
         copyright_block = f'        <p>&copy; {year} {_html_escape.escape(state["copyright"])}</p>'
     else:
         # Omitted entirely (not even an empty <p>) rather than shown with a
@@ -393,7 +401,12 @@ def _render_status_data(state: dict) -> Response:
     incident_limit = None
     if _query_flag("history"):
         incident_limit = status_registry._MAX_INCIDENTS_HISTORY
-    data = status_registry.snapshot(admin=admin, incident_limit=incident_limit)
+    data = status_registry.snapshot(
+        admin=admin,
+        incident_limit=incident_limit,
+        timezone=state.get("timezone", "auto"),
+        time_format=state.get("time_format", "12h"),
+    )
     # Whether an admin login is even worth showing on this page - NOT the
     # api_key itself. The real key must never appear in a response served
     # to every visitor (that's the whole page/CSS/JS/data endpoint now -
@@ -414,7 +427,7 @@ def _render_status_data(state: dict) -> Response:
     return jsonify(data)
 
 
-def _render_response(state: dict, route_path: str = None):
+def _render_response(state: dict):
     response_type = state.get("type")
     value = state.get("value")
 
@@ -437,7 +450,7 @@ def _render_response(state: dict, route_path: str = None):
             return jsonify({"error": f"Could not read Markdown file: {exc}"}), 500
 
     if response_type == "status":
-        return _render_status_page(state, route_path)
+        return _render_status_page(state)
 
     if response_type == "json":
         try:
@@ -551,7 +564,7 @@ def catch_all(req_path):
             if request.query_string:
                 target += "?" + request.query_string.decode("utf-8", "replace")
             return redirect(target, code=308)
-        return _render_response(state, canonical)
+        return _render_response(state)
 
     owner = _find_asset_owner(canonical)
     if owner is not None:

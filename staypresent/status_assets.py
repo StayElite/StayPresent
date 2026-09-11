@@ -829,6 +829,7 @@ let showFullHistory = false;
 let latestData = {
   overall_status: 'operational', services: [], incidents: [],
   generated_at: null, admin: false, admin_available: null,
+  timezone: 'auto', time_format: '12h',
 };
 let uptimeChart = null;
 let adminKey = '';
@@ -916,17 +917,119 @@ function getStatusGraph(status) {
 
 function titleCase(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
+// Shared by every timestamp the status page renders (this file's own
+// "Last updated" clock, each incident's time, each admin log line) -
+// one place resolving `latestData.timezone`/`latestData.time_format`
+// (both echoed back by the data endpoint - see status_registry.py's
+// snapshot()) so all of them always agree with each other and with
+// whatever staypresent.web.status(timezone=..., time_format=...) was
+// configured with.
+
+// "auto" (the default) means "the visitor's own browser/OS timezone" -
+// only resolvable here, client-side, since the server has no visitor to
+// ask when it renders its own UTC-fallback copy of these same strings
+// (see status_registry.py's _tzinfo()). A missing/falsy `timezone`
+// (e.g. this page's JS talking to an older, pre-timezone-support server
+// - see formatLogEntry() below for the matching log-entry fallback)
+// is treated the same way, so "follow my own timezone" stays the
+// sensible default either way.
+function resolveTimeZone() {
+  if (!latestData.timezone || latestData.timezone === 'auto') {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch (err) {
+      // No Intl support at all (extremely old browser) - UTC is at
+      // least a consistent, unambiguous fallback.
+      return 'UTC';
+    }
+  }
+  return latestData.timezone;
+}
+
+function isHour12() {
+  return latestData.time_format !== '24h';
+}
+
+// Renders a Date using the resolved timezone, with a same-shaped UTC
+// fallback if the browser's Intl implementation rejects that zone
+// (extremely unlikely in practice - the server itself already validated
+// any explicit `timezone` with the same IANA database at registration
+// time - but "auto" pulls from Intl.DateTimeFormat() too, and an old
+// browser's own guess there is worth guarding regardless).
+function formatDateTimeSafe(d, opts) {
+  try {
+    return d.toLocaleString('en-US', { ...opts, timeZone: resolveTimeZone() });
+  } catch (err) {
+    return d.toLocaleString('en-US', { ...opts, timeZone: 'UTC' });
+  }
+}
+
+// Full "MMM DD, YYYY at H:MM AM/PM ZONE" (or 24h equivalent) - used for
+// incident timestamps, matching the shape of the server's own
+// `time_display` fallback (see status_registry.py's _format_time()).
+// Built from Intl's own structured `formatToParts()` output rather than
+// post-processing `toLocaleString()`'s text (e.g. replacing a comma)
+// - that text's exact punctuation varies by browser/ICU version, so a
+// literal-text edit like that is fragile in a way parts aren't.
+function formatIncidentTime(epochSeconds) {
+  if (typeof epochSeconds !== 'number' || !isFinite(epochSeconds)) return null;
+  const opts = {
+    year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: isHour12(), timeZoneName: 'short',
+  };
+  const d = new Date(epochSeconds * 1000);
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat('en-US', { ...opts, timeZone: resolveTimeZone() }).formatToParts(d);
+  } catch (err) {
+    parts = new Intl.DateTimeFormat('en-US', { ...opts, timeZone: 'UTC' }).formatToParts(d);
+  }
+  const get = (type) => (parts.find(p => p.type === type) || {}).value || '';
+  const clock = isHour12() ? `${get('hour')}:${get('minute')} ${get('dayPeriod')}` : `${get('hour')}:${get('minute')}`;
+  const tz = get('timeZoneName');
+  return `${get('month')} ${get('day')}, ${get('year')} at ${clock}${tz ? ' ' + tz : ''}`;
+}
+
+// "H:MM:SS AM/PM" (or 24h "HH:MM:SS"), no zone abbreviation - used for
+// each admin log line's timestamp, where a zone name on every single
+// line would be noisy repetition rather than useful.
+function formatClockTime(epochSeconds) {
+  if (typeof epochSeconds !== 'number' || !isFinite(epochSeconds)) return null;
+  const opts = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: isHour12() };
+  return formatDateTimeSafe(new Date(epochSeconds * 1000), opts);
+}
+
 function updateLastUpdated() {
   const el = document.getElementById('lastUpdated');
-  if (!latestData.generated_at) { el.textContent = '-'; return; }
-  const d = new Date(latestData.generated_at * 1000);
-  el.textContent = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC' }) + ' UTC';
+  let text = null;
+  if (latestData.generated_at) {
+    const opts = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: isHour12(), timeZoneName: 'short' };
+    text = formatDateTimeSafe(new Date(latestData.generated_at * 1000), opts);
+  }
+  el.textContent = text || '-';
+}
+
+// Each `log` entry is normally `{time, stream, line, display}` (see
+// status_registry.py's snapshot()) - re-rendered here from the raw
+// `time`/`stream`/`line` fields in the visitor's own resolved
+// timezone/clock style, so it matches every other timestamp on the
+// page. A bare string entry (the pre-timezone-support response shape)
+// is used as-is instead - guards against a stale cached copy of this
+// very file (see _SHARED_STATUS_JS_PATH's own reasoning on caching)
+// still being served alongside an already-upgraded server, or vice
+// versa.
+function formatLogEntry(entry) {
+  if (typeof entry === 'string') return entry;
+  if (!entry || typeof entry !== 'object') return '';
+  const stamp = formatClockTime(entry.time) || (entry.display || '').split(' ')[0] || '';
+  const prefix = entry.stream === 'stderr' ? `${stamp} [stderr] ` : `${stamp} `;
+  return `${prefix}${entry.line ?? ''}`;
 }
 
 function renderLogTail(log, serviceName) {
   if (!log || log.length === 0) return '';
   const lineCount = log.length;
-  const text = log.map(escapeHtml).join('\\n');
+  const text = log.map(entry => escapeHtml(formatLogEntry(entry))).join('\\n');
   const isOpen = openLogTails.has(serviceName);
   return `<details class="service-log" data-service="${escapeHtml(serviceName)}"${isOpen ? ' open' : ''}><summary>Last log (${lineCount} line${lineCount === 1 ? '' : 's'})</summary><pre>${text}</pre></details>`;
 }
@@ -995,7 +1098,7 @@ function renderIncidents() {
           ${incident.service ? getServiceTypeBadge(incident.service) : ''}
         </div>
       </div>
-      <p class="incident-time">${escapeHtml(incident.time_display)}</p>
+      <p class="incident-time">${escapeHtml(formatIncidentTime(incident.time) || incident.time_display)}</p>
       ${incident.log_line ? `<pre class="incident-log">${escapeHtml(incident.log_line)}</pre>` : ''}
     </div>
   `).join('');

@@ -65,6 +65,8 @@ _DEFAULT_STATUS_STATE_TEMPLATE = {
     "favicon": None,
     "description": None,
     "poll_seconds": 15,
+    "timezone": "auto",
+    "time_format": "12h",
 }
 
 # Lazily generated the first time the implicit default status page (see
@@ -263,7 +265,23 @@ def text(
     services_description: str = None,
     status: bool = False,
 ) -> None:
-    """
+    status = _validate_status_param(status, "staypresent.web.text()")
+    _apply_services_override(services_name, services_description, "staypresent.web.text()")
+    p = _normalize_path(path)
+    with _lock:
+        previous = _routes.get(p)
+        _routes[p] = {"type": "text", "value": str(message), "status": status}
+    _warn_if_overwriting(p, previous, "text")
+
+
+# Assigned explicitly (rather than left as a plain """...""" statement in
+# the function body above) because Python only auto-populates __doc__
+# from a bare string *literal* as the first statement - a concatenation
+# expression like this one (needed here to splice in the shared
+# _SERVICES_NAME_DESCRIPTION_DOC/_STATUS_PARAM_DOC snippets below) is
+# just a no-op expression statement to Python, silently discarded rather
+# than becoming the docstring `help()`/IDEs/Sphinx actually read.
+text.__doc__ = """
     Set a plain-text response for the web server to return at `path`.
 
     Args:
@@ -277,13 +295,6 @@ def text(
         TypeError: if `services_name`/`services_description` is set to
             something other than a str, or if `status` isn't a bool.
     """
-    status = _validate_status_param(status, "staypresent.web.text()")
-    _apply_services_override(services_name, services_description, "staypresent.web.text()")
-    p = _normalize_path(path)
-    with _lock:
-        previous = _routes.get(p)
-        _routes[p] = {"type": "text", "value": str(message), "status": status}
-    _warn_if_overwriting(p, previous, "text")
 
 
 def json(
@@ -293,7 +304,25 @@ def json(
     services_description: str = None,
     status: bool = False,
 ) -> None:
-    """
+    try:
+        _json.dumps(data)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"staypresent.web.json(): 'data' is not JSON-serializable: {exc}"
+        ) from exc
+    status = _validate_status_param(status, "staypresent.web.json()")
+    _apply_services_override(services_name, services_description, "staypresent.web.json()")
+
+    p = _normalize_path(path)
+    with _lock:
+        previous = _routes.get(p)
+        _routes[p] = {"type": "json", "value": copy.deepcopy(data), "status": status}
+    _warn_if_overwriting(p, previous, "json")
+
+
+# See text.__doc__'s own assignment above for why this is set explicitly
+# rather than left as a plain """...""" statement in the function body.
+json.__doc__ = """
     Set a JSON-serializable response (dict/list) for the web server to
     return at `path`.
 
@@ -312,20 +341,6 @@ def json(
             `services_name`/`services_description` is set to something
             other than a str, or if `status` isn't a bool.
     """
-    try:
-        _json.dumps(data)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(
-            f"staypresent.web.json(): 'data' is not JSON-serializable: {exc}"
-        ) from exc
-    status = _validate_status_param(status, "staypresent.web.json()")
-    _apply_services_override(services_name, services_description, "staypresent.web.json()")
-
-    p = _normalize_path(path)
-    with _lock:
-        previous = _routes.get(p)
-        _routes[p] = {"type": "json", "value": copy.deepcopy(data), "status": status}
-    _warn_if_overwriting(p, previous, "json")
 
 
 # Directories we've already warned about, so a bot that calls html()/
@@ -457,7 +472,32 @@ def html(
     services_description: str = None,
     status: bool = False,
 ) -> None:
-    """
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(
+            f"staypresent.web.html(): file '{file_path}' does not exist or is not a file."
+        )
+
+    exclude_patterns = _normalize_exclude(exclude, "html")
+    status = _validate_status_param(status, "staypresent.web.html()")
+    _apply_services_override(services_name, services_description, "staypresent.web.html()")
+
+    _warn_serves_whole_directory(file_path)
+
+    p = _normalize_path(path)
+    with _lock:
+        previous = _routes.get(p)
+        _routes[p] = {
+            "type": "html",
+            "value": os.path.abspath(file_path),
+            "exclude": exclude_patterns,
+            "status": status,
+        }
+    _warn_if_overwriting(p, previous, "html")
+
+
+# See text.__doc__'s own assignment above for why this is set explicitly
+# rather than left as a plain """...""" statement in the function body.
+html.__doc__ = """
     Serve the content of an HTML file as the web response at `path`.
 
     The file is read fresh on every incoming request, so you can edit the
@@ -502,27 +542,6 @@ def html(
             shape, if `services_name`/`services_description` is set to
             something other than a str, or if `status` isn't a bool.
     """
-    if not os.path.isfile(file_path):
-        raise FileNotFoundError(
-            f"staypresent.web.html(): file '{file_path}' does not exist or is not a file."
-        )
-
-    exclude_patterns = _normalize_exclude(exclude, "html")
-    status = _validate_status_param(status, "staypresent.web.html()")
-    _apply_services_override(services_name, services_description, "staypresent.web.html()")
-
-    _warn_serves_whole_directory(file_path)
-
-    p = _normalize_path(path)
-    with _lock:
-        previous = _routes.get(p)
-        _routes[p] = {
-            "type": "html",
-            "value": os.path.abspath(file_path),
-            "exclude": exclude_patterns,
-            "status": status,
-        }
-    _warn_if_overwriting(p, previous, "html")
 
 
 _VALID_MARKDOWN_MODES = ("light", "dark", "auto")
@@ -540,7 +559,70 @@ def markdown(
     services_description: str = None,
     status: bool = False,
 ) -> None:
-    """
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(
+            f"staypresent.web.markdown(): file '{file_path}' does not exist or is not a file."
+        )
+
+    if mode is None:
+        mode = "auto"
+    if not isinstance(mode, str) or mode.strip().lower() not in _VALID_MARKDOWN_MODES:
+        raise ValueError(
+            "staypresent.web.markdown(): 'mode' must be one of 'light', 'dark', or "
+            f"'auto', got {mode!r}."
+        )
+    mode = mode.strip().lower()
+
+    for name, value in (("favicon", favicon), ("title", title), ("description", description)):
+        if value is not None and not isinstance(value, str):
+            raise TypeError(
+                f"staypresent.web.markdown(): '{name}' must be a str or None, got {type(value).__name__}."
+            )
+
+    exclude_patterns = _normalize_exclude(exclude, "markdown")
+    status = _validate_status_param(status, "staypresent.web.markdown()")
+    _apply_services_override(services_name, services_description, "staypresent.web.markdown()")
+
+    if favicon and not favicon.startswith(("http://", "https://", "//")):
+        # Not a direct URL - resolved the same way neighboring assets are:
+        # relative to file_path's own directory. Check it exists up front,
+        # the same way file_path itself is checked above, rather than
+        # letting a typo'd favicon silently 404 only when a browser
+        # actually requests it.
+        favicon_path = os.path.join(os.path.dirname(os.path.abspath(file_path)), favicon)
+        if not os.path.isfile(favicon_path):
+            raise FileNotFoundError(
+                f"staypresent.web.markdown(): favicon '{favicon}' does not exist next to "
+                f"'{file_path}' (looked for '{favicon_path}')."
+            )
+        if _path_excluded(favicon, exclude_patterns):
+            raise ValueError(
+                f"staypresent.web.markdown(): favicon '{favicon}' is blocked by 'exclude' "
+                f"({exclude!r}) - it would never actually be servable. Either pick a favicon "
+                "filename that doesn't match an excluded pattern, or adjust 'exclude'."
+            )
+
+    _warn_serves_whole_directory(file_path)
+
+    p = _normalize_path(path)
+    with _lock:
+        previous = _routes.get(p)
+        _routes[p] = {
+            "type": "markdown",
+            "value": os.path.abspath(file_path),
+            "mode": mode,
+            "favicon": favicon,
+            "title": title,
+            "description": description,
+            "exclude": exclude_patterns,
+            "status": status,
+        }
+    _warn_if_overwriting(p, previous, "markdown")
+
+
+# See text.__doc__'s own assignment above for why this is set explicitly
+# rather than left as a plain """...""" statement in the function body.
+markdown.__doc__ = """
     Serve a Markdown (.md) file, rendered to styled HTML, as the web
     response at `path`.
 
@@ -605,12 +687,12 @@ def markdown(
             registering a favicon that would silently 404 for every
             visitor.
 """ + _SERVICES_NAME_DESCRIPTION_DOC.replace(
-        "services_description: Optional description shown under",
-        "services_description: Not the same thing as this function's own "
-        "`description` above (that one's the rendered page's own "
-        "<meta name=\"description\">, this one's the status page's) - "
-        "optional description shown under",
-    ) + _STATUS_PARAM_DOC + """
+    "services_description: Optional description shown under",
+    "services_description: Not the same thing as this function's own "
+    "`description` above (that one's the rendered page's own "
+    "<meta name=\"description\">, this one's the status page's) - "
+    "optional description shown under",
+) + _STATUS_PARAM_DOC + """
     Raises:
         FileNotFoundError: if `file_path` does not exist at call time.
         ValueError: if `mode` isn't "light", "dark", or "auto", or if
@@ -620,65 +702,6 @@ def markdown(
             str, if `exclude` (or an entry within it) has the wrong
             shape, or if `status` isn't a bool.
     """
-    if not os.path.isfile(file_path):
-        raise FileNotFoundError(
-            f"staypresent.web.markdown(): file '{file_path}' does not exist or is not a file."
-        )
-
-    if mode is None:
-        mode = "auto"
-    if not isinstance(mode, str) or mode.strip().lower() not in _VALID_MARKDOWN_MODES:
-        raise ValueError(
-            "staypresent.web.markdown(): 'mode' must be one of 'light', 'dark', or "
-            f"'auto', got {mode!r}."
-        )
-    mode = mode.strip().lower()
-
-    for name, value in (("favicon", favicon), ("title", title), ("description", description)):
-        if value is not None and not isinstance(value, str):
-            raise TypeError(
-                f"staypresent.web.markdown(): '{name}' must be a str or None, got {type(value).__name__}."
-            )
-
-    exclude_patterns = _normalize_exclude(exclude, "markdown")
-    status = _validate_status_param(status, "staypresent.web.markdown()")
-    _apply_services_override(services_name, services_description, "staypresent.web.markdown()")
-
-    if favicon and not favicon.startswith(("http://", "https://", "//")):
-        # Not a direct URL - resolved the same way neighboring assets are:
-        # relative to file_path's own directory. Check it exists up front,
-        # the same way file_path itself is checked above, rather than
-        # letting a typo'd favicon silently 404 only when a browser
-        # actually requests it.
-        favicon_path = os.path.join(os.path.dirname(os.path.abspath(file_path)), favicon)
-        if not os.path.isfile(favicon_path):
-            raise FileNotFoundError(
-                f"staypresent.web.markdown(): favicon '{favicon}' does not exist next to "
-                f"'{file_path}' (looked for '{favicon_path}')."
-            )
-        if _path_excluded(favicon, exclude_patterns):
-            raise ValueError(
-                f"staypresent.web.markdown(): favicon '{favicon}' is blocked by 'exclude' "
-                f"({exclude!r}) - it would never actually be servable. Either pick a favicon "
-                "filename that doesn't match an excluded pattern, or adjust 'exclude'."
-            )
-
-    _warn_serves_whole_directory(file_path)
-
-    p = _normalize_path(path)
-    with _lock:
-        previous = _routes.get(p)
-        _routes[p] = {
-            "type": "markdown",
-            "value": os.path.abspath(file_path),
-            "mode": mode,
-            "favicon": favicon,
-            "title": title,
-            "description": description,
-            "exclude": exclude_patterns,
-            "status": status,
-        }
-    _warn_if_overwriting(p, previous, "markdown")
 
 
 def _validate_footer_links(footer_links) -> list:
@@ -713,6 +736,8 @@ def status(
     favicon: str = None,
     description: str = None,
     poll_seconds: float = 15,
+    timezone: str = "auto",
+    time_format: str = "12h",
     status: bool = False,
 ) -> None:
     """
@@ -739,6 +764,8 @@ def status(
             mode="dark",
             favicon="https://groundflare.example/favicon.png",
             description="Live status for Groundflare's bots.",
+            timezone="Asia/Kolkata",  # or the shorthand alias: timezone="IST" - default is "auto"
+            time_format="24h",  # default is "12h"
         )
 
         To rename this process's service row, pass services_name/
@@ -818,6 +845,38 @@ def status(
             at the cost of more requests against this endpoint from
             every open tab; higher values reduce that load at the cost
             of visitors seeing slightly staler data between polls.
+        timezone: Timezone every date/time on this status page is shown
+            in - incident timestamps, an admin's log-line timestamps, the
+            "Last updated" indicator, and (when `copyright` is set) the
+            copyright line's year. Defaults to "auto": each visitor's own
+            browser/OS timezone, detected client-side, so e.g. two people
+            looking at the same page in different countries each see
+            times in their own local zone. Set an explicit zone instead
+            for a fixed, same-for-everyone timezone regardless of who's
+            looking - a standard IANA zone key (e.g. "Asia/Kolkata",
+            "America/New_York", "Europe/London" - see
+            https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)
+            or one of a handful of common, unambiguous shorthand aliases
+            ("IST" -> "Asia/Kolkata", "PST"/"PDT" -> "America/Los_Angeles",
+            "EST"/"EDT" -> "America/New_York", "CST"/"CDT" ->
+            "America/Chicago", "MST"/"MDT" -> "America/Denver", "GMT" ->
+            "UTC", "BST" -> "Europe/London", "CET" -> "Europe/Paris",
+            "JST" -> "Asia/Tokyo", "AEST" -> "Australia/Sydney") -
+            deliberately a short list, since several common abbreviations
+            genuinely mean different things in different regions (e.g.
+            "IST"/"CST" elsewhere); use the real IANA key instead of one
+            of these if the alias isn't the region you meant. A fixed
+            zone (anything other than the "auto" default or "UTC")
+            requires Python 3.9+'s stdlib `zoneinfo` module (or the
+            `backports.zoneinfo` package on older Pythons) - "auto" and
+            "UTC" never need it, since the server itself always falls
+            back to UTC for its own rendering (e.g. for a non-browser API
+            consumer of the JSON data endpoint) either way; a real
+            "auto" resolution only ever happens in the visitor's own
+            browser.
+        time_format: Clock style for every time shown on this status
+            page - "12h" (e.g. "2:30 PM", the default) or "24h" (e.g.
+            "14:30"). Applies everywhere `timezone` above does.
         status: Whether this status page itself gets its own row *on*
             the status page (i.e. "Status - Web", alongside any other
             visible routes). Defaults to False, same as every other
@@ -828,12 +887,18 @@ def status(
 
     Raises:
         TypeError: if `title`/`copyright`/`api_key`/`favicon`/
-            `description` isn't a str or None, if `trust_proxy_headers`
-            isn't a bool, if `footer_links` (or an entry within it) has
-            the wrong shape, if `poll_seconds` isn't an int or float, or
-            if `status` isn't a bool.
-        ValueError: if `mode` isn't "light", "dark", or "auto", or if
-            `poll_seconds` isn't positive.
+            `description`/`timezone`/`time_format` isn't a str
+            (`timezone`/`time_format` also can't be None, unlike the
+            others), if `trust_proxy_headers` isn't a bool, if
+            `footer_links` (or an entry within it) has the wrong shape,
+            if `poll_seconds` isn't an int or float, or if `status` isn't
+            a bool.
+        ValueError: if `mode` isn't "light", "dark", or "auto", if
+            `poll_seconds` isn't positive, if `timezone` isn't "auto", a
+            recognized alias, or a valid IANA zone key (see `timezone`
+            above for what's accepted, including the Python-version
+            caveat for anything other than "auto"/"UTC"), or if
+            `time_format` isn't "12h" or "24h".
     """
     status = _validate_status_param(status, "staypresent.web.status()")
     for name, value in (
@@ -866,6 +931,13 @@ def status(
         )
     mode = mode.strip().lower()
 
+    # Validated/normalized up front (same as mode above) so bad
+    # timezone/time_format values raise immediately at registration time
+    # rather than surfacing later as an obscure error from inside a
+    # status-page poll.
+    resolved_timezone = status_registry.resolve_timezone(timezone, "staypresent.web.status()")
+    resolved_time_format = status_registry.resolve_time_format(time_format, "staypresent.web.status()")
+
     validated_links = _validate_footer_links(footer_links)
 
     p = _normalize_path(path)
@@ -894,6 +966,8 @@ def status(
             "favicon": favicon,
             "description": description,
             "poll_seconds": poll_seconds,
+            "timezone": resolved_timezone,
+            "time_format": resolved_time_format,
             "status": status,
         }
     _warn_if_overwriting(p, previous, "status")

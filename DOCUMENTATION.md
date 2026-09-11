@@ -26,7 +26,8 @@ This is the complete reference for StayPresent: every parameter, every behavior,
 8. [API Reference](#8-api-reference)
 9. [Logging](#9-logging)
 10. [Deployment Notes](#10-deployment-notes)
-11. [FAQ](#11-faq)
+11. [Boot-Level Restart (`staypresent.restart`)](#11-boot-level-restart-staypresentrestart)
+12. [Frequently Asked Questions](#12-frequently-asked-questions-faq)
 
 ---
 
@@ -263,6 +264,8 @@ staypresent.web.status(
     footer_links=[{"label": "Contact Support", "url": "https://support.groundflare/support"}],
     api_key="a-long-random-secret",
     mode="dark",
+    timezone="Asia/Kolkata",  # or the shorthand alias: timezone="IST" - default is "auto"
+    time_format="24h",  # default is "12h"
 )
 staypresent.run("bot.py")
 
@@ -282,6 +285,8 @@ staypresent.web.status(
     favicon: str = None,
     description: str = None,
     poll_seconds: float = 15,
+    timezone: str = "auto",
+    time_format: str = "12h",
     status: bool = False,
 ) -> None
 
@@ -299,7 +304,16 @@ staypresent.web.status(
 | `favicon` | `str` or `None` | `None` | Optional favicon. A direct URL (`http://`, `https://`, `//`, or `data:`) is used as-is; anything else is used as a plain `href`, so it must already be servable from somewhere (e.g. a path registered with `html()`) — unlike `markdown()`, there's no local file directory to resolve a relative filename against. Left unset, the page shows a small dot favicon that updates live to reflect overall status (green/amber/red); setting `favicon` disables that live color-swapping. |
 | `description` | `str` or `None` | `None` | `<meta name="description">`/Open Graph description. Defaults to a generic `"<title> - live status, powered by StayPresent."` when omitted. |
 | `poll_seconds` | `float` | `15` | How often (seconds) an open status page polls its own live data endpoint. Must be positive. Lower values mean fresher data at the cost of more requests from every open tab. |
+| `timezone` | `str` | `"auto"` | Timezone every date/time on the page is shown in — incident timestamps, an admin's log-line timestamps, the "Last updated" indicator, and the copyright line's year. Defaults to `"auto"`: each visitor's own browser/OS timezone, detected client-side, so two people looking at the same page from different countries each see times in their own local zone. Set an explicit zone instead for a fixed, same-for-everyone timezone — a standard [IANA zone key](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) (e.g. `"Asia/Kolkata"`, `"America/New_York"`) or a short, unambiguous alias — see below. A fixed zone (anything other than `"auto"`/`"UTC"`) requires Python 3.9+'s stdlib `zoneinfo` module (or the `backports.zoneinfo` package on older Pythons); `"auto"` and `"UTC"` never need it, since the server's own rendering (e.g. for a non-browser API consumer of the JSON data endpoint) always falls back to UTC either way — a real `"auto"` resolution only ever happens in the visitor's own browser. |
+| `time_format` | `str` | `"12h"` | Clock style for every time shown on the page — `"12h"` (e.g. `"2:30 PM"`, the default) or `"24h"` (e.g. `"14:30"`). Applies everywhere `timezone` above does. |
 | `status` | `bool` | `False` | Whether the status page itself gets a row *on* itself (labeled `"Status - Web"`). Doesn't affect whether the page works or is reachable — only whether it lists itself. |
+
+**Timezone aliases:**
+
+A handful of common, low-ambiguity abbreviations are accepted as shorthand for `timezone`: `"IST"` → `"Asia/Kolkata"`, `"GMT"` → `"UTC"`, `"EST"`/`"EDT"` → `"America/New_York"`, `"CST"`/`"CDT"` → `"America/Chicago"`, `"MST"`/`"MDT"` → `"America/Denver"`, `"PST"`/`"PDT"` → `"America/Los_Angeles"`, `"BST"` → `"Europe/London"`, `"CET"` → `"Europe/Paris"`, `"JST"` → `"Asia/Tokyo"`, `"AEST"` → `"Australia/Sydney"`. This is intentionally a short list — several common abbreviations genuinely mean different zones in different regions (`"IST"` alone could mean India, Israel, or Irish Standard Time; `"CST"` could mean US Central, China, or Cuba Standard Time), so StayPresent picks one specific, common meaning for each entry above rather than guessing at the rest. If the region you meant isn't one of these, pass the real IANA zone key instead (e.g. `"America/Chicago"`, `"Asia/Shanghai"`) — that's always accepted unmodified. An unrecognized alias or an invalid IANA key raises `ValueError` at registration time, with the full alias list and a pointer to the IANA zone database in the error message.
+
+**How `timezone="auto"` actually works:** the server has no way to know a visitor's timezone before their browser has loaded the page and run its JS — a fixed backend process can't resolve "auto" into a real zone for a JSON response by itself. So `timezone="auto"` (and the `"UTC"` default it falls back to server-side) works in two layers: the JSON data endpoint always includes both a raw Unix-epoch timestamp *and* a server-rendered fallback string (in UTC, for `"auto"`) for every incident/log line — useful as-is for a script or `curl` hitting that endpoint directly — while the status page's own bundled JS re-renders every one of those raw timestamps in the browser's actual local timezone (via `Intl.DateTimeFormat().resolvedOptions().timeZone`) and chosen `time_format` before showing them. In other words: humans looking at the page in a browser get true per-visitor personalization; anything else consuming the JSON directly gets a sane, fixed UTC default.
+
 
 **Public view vs. admin view:**
 
@@ -576,6 +590,8 @@ StayPresent strictly monitors every bot's subprocess lifecycle, independently:
 * **Terminal Failures:** If `max_restarts` is exhausted for a bot, or if restarts are disabled and it crashes, that bot is marked as permanently failed (but other bots keep running). Once every bot has finished, if any bot ended in a permanently-failed state, `staypresent.run()` exits the main process with a non-zero exit code, so platform-level orchestrators (Docker, systemd, Render, Railway) correctly detect the failure and can apply their own restart policy. When more than one bot fails, the process's own exit code is deterministically the lowest-indexed failing bot's own exit code (not whichever bot's monitor thread happened to finish first).
 * **Relaunch Failures:** If the OS itself refuses to spawn a replacement process during a restart (out of file descriptors/memory, a process-count ulimit, etc.), that's treated as a terminal failure for that bot rather than crashing the monitor thread.
 
+None of the above survives the whole machine rebooting, though — a reboot kills the Python process (and every bot it's supervising) outright, with nothing left running to restart anything. See [Section 11](#11-boot-level-restart-staypresentrestart) for `staypresent.restart()`, which covers that case specifically.
+
 Every one of these transitions — a start, a crash, a hang, a permanent failure, a clean exit, a recovery — is also recorded for the status page described in [Section 3.5](#35-status-pages-staypresentwebstatus), if you're using it. This tracking runs regardless of whether you've called `staypresent.web.status()` at all; it costs nothing extra either way.
 
 ---
@@ -748,7 +764,7 @@ This is a lightweight renderer, not a full CommonMark implementation. It does no
 * **`web.json(data: Any, path: str = "/", services_name: str = None, services_description: str = None, status: bool = False)`** – Configures `path` to return a JSON payload (deep-copied).
 * **`web.html(file_path: str, path: str = "/", exclude: list = None, services_name: str = None, services_description: str = None, status: bool = False)`** – Configures `path` to serve an HTML file, read fresh every request, alongside neighboring static files (except any matching `exclude`).
 * **`web.markdown(file_path: str, path: str = "/", mode: str = "auto", favicon: str = None, title: str = None, description: str = None, exclude: list = None, services_name: str = None, services_description: str = None, status: bool = False)`** – Configures `path` to serve a Markdown file rendered to styled HTML, read and re-rendered fresh every request, alongside neighboring static files (except any matching `exclude`). See [Section 3.4](#34-markdown-responses).
-* **`web.status(title: str = None, path: str = "/status", copyright: str = None, footer_links: list = None, api_key: str = None, trust_proxy_headers: bool = False, mode: str = "auto", favicon: str = None, description: str = None, poll_seconds: float = 15, status: bool = False)`** – Configures `path` to serve the built-in status page. See [Section 3.5](#35-status-pages-staypresentwebstatus).
+* **`web.status(title: str = None, path: str = "/status", copyright: str = None, footer_links: list = None, api_key: str = None, trust_proxy_headers: bool = False, mode: str = "auto", favicon: str = None, description: str = None, poll_seconds: float = 15, timezone: str = "auto", time_format: str = "12h", status: bool = False)`** – Configures `path` to serve the built-in status page. See [Section 3.5](#35-status-pages-staypresentwebstatus).
 * **`web.remove(path: str = "/")`** – Stops hosting a response at `path`. Returns `True`/`False`.
 * **`web.get(path: str = "/")`** – Returns the currently configured response state for `path` as a dictionary, including StayPresent's own implicit defaults at `/`, `/health`, and `/status`, or `{}` if nothing is registered or defaulted there.
 * **`web.get_all()`** – Returns every path currently hosting a response — including the implicit defaults above — and its state, as one dictionary.
@@ -761,6 +777,7 @@ This is a lightweight renderer, not a full CommonMark implementation. It does no
 * **`ping(host: str, port: int = None, path: str = "/", timeout: float = 10.0, https: bool = None) -> dict`** – Sends a synchronous HTTP request.
 * **`cron(host: str, port: int = None, path: str = "/", interval: float = 300.0, repeat: bool = True, timeout: float = 10.0, https: bool = None, on_success=None, on_failure=None) -> CronHandle`** – Runs scheduled background keep-warm requests.
 * **`active_cron_handles() -> list[CronHandle]`** – Returns every currently-running `CronHandle` from any past call to `cron()`. See [Section 5](#5-self-ping--keep-warm-staypresentping--staypresentcron).
+* **`restart(policy: str = "no", name: str = None, command: list = None, working_directory: str = None, restart_sec: float = 3, enable_linger: bool = True) -> dict`** – Installs (and enables) a user-level systemd unit so this script survives a full machine reboot, not just an in-process crash. `policy` mirrors Docker's own `--restart` flag: `"no"` (default, does nothing), `"always"`, `"on-failure"[:N]`, `"unless-stopped"`. Linux only. See [Section 11](#11-boot-level-restart-staypresentrestart).
 
 ---
 
@@ -799,7 +816,64 @@ logging.getLogger("staypresent").setLevel(logging.DEBUG)
 
 ---
 
-## 11. FAQ
+## 11. Boot-Level Restart (`staypresent.restart`)
+
+Everything in [Section 4's Crash Recovery Protocol](#crash-recovery-protocol) only works while your Python process is actually alive — it's `staypresent.run()` itself watching over its own bots. A full machine reboot (or a `kill -9` on the process, or the machine losing power) takes that process down with nothing left running to restart anything. `staypresent.restart()` covers that specific gap on Linux, by installing a real, OS-managed `systemd --user` unit for your script — the same mechanism Docker itself ultimately relies on (`dockerd` is a systemd unit too), scoped down to what a plain user-level unit can promise. It mirrors Docker's own `--restart` flag's four values directly — `"no"` (the default, for both), `"always"`, `"on-failure"[:max-retries]`, `"unless-stopped"` — see [Restart Policy Values](#restart-policy-values) below for exactly what each one does here and where it diverges from real Docker behavior.
+
+```python
+import staypresent
+
+staypresent.restart(policy="always")
+staypresent.run("bot.py")
+```
+
+Call this once, from the same script that calls `staypresent.run()` — typically right before it, as above. **It does not start or relaunch anything by itself** — for any policy other than `"no"`, it only writes the unit file and runs `systemctl --user enable`, so systemd will launch your script the *next* time this user logs in (or, with lingering enabled — see `enable_linger` below — on every future boot regardless of login). It deliberately never runs `systemctl --user start` for you: doing so from inside the very script that's already running right now would silently launch a second, independent copy of your bot alongside this one. `staypresent.restart()`'s return value (and its own log line) includes the exact `systemctl --user start <name>.service` command to run yourself once you're ready to hand off to systemd — stop this script by hand first, so you don't end up with two copies.
+
+`policy="no"` (the default, same as Docker) is different from the other three in one important way: it's a true no-op — nothing is written to disk, `systemctl`/`loginctl` are never invoked, every other argument is ignored, and it never even checks whether you're on Linux. That's deliberate: it's what makes `staypresent.restart()` safe to leave in a script unconditionally on any platform, with nothing to configure and nothing to clean up later — you only pay the Linux/systemd requirement once you actually opt into a real policy.
+
+**Signature:**
+
+```python
+staypresent.restart(
+    policy: str = "no",
+    name: str = None,
+    command: list = None,
+    working_directory: str = None,
+    restart_sec: float = 3,
+    enable_linger: bool = True,
+) -> dict
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `policy` | `str` | `"no"` | One of `"no"`, `"always"`, `"on-failure"` (optionally `"on-failure:N"`), or `"unless-stopped"` — see [Restart Policy Values](#restart-policy-values) below. |
+| `name` | `str` or `None` | `None` | Systemd unit name (without `.service`). Defaults to `"staypresent-<script filename>"` (e.g. `"staypresent-bot"` for `bot.py`). Only letters, digits, `-`, `_` allowed if given explicitly. Ignored when `policy="no"`. |
+| `command` | `list` or `None` | `None` | The exact command to (re)launch, as an argv list (e.g. `["python3", "/home/alice/bot/bot.py"]`). Defaults to the currently running interpreter and script — right for the common case of calling this from the top of the same script `staypresent.run()` is called from. Give this explicitly if `sys.argv[0]` is empty in your context (e.g. a `python3 -c ...` one-liner) — there's nothing to auto-derive a path from otherwise (raises `ValueError`). Ignored when `policy="no"`. |
+| `working_directory` | `str` or `None` | `None` | Directory the command runs from. Defaults to the current working directory when `restart()` is called. Ignored when `policy="no"`. |
+| `restart_sec` | `float` | `3` | Seconds systemd waits before each restart attempt. Ignored when `policy="no"`. |
+| `enable_linger` | `bool` | `True` | Also attempts `loginctl enable-linger` for the current user. Without this, the unit only starts once that user has an active login session — fine on a desktop, but on a headless server it means the unit won't come back after a reboot until someone logs in as this user again. Best-effort: some systems restrict who can enable their own lingering, so a failure here is logged as a `WARNING` (with the exact command to try yourself) rather than raised. Ignored when `policy="no"`. |
+
+**Returns** a dict: `{"name", "unit_path", "command", "policy", "linger_enabled", "start_command", "installed"}` — `start_command` is the exact command to run yourself when ready to hand off to systemd. For `policy="no"`, `"installed"` is `False` and every other key besides `"policy"` is `None`.
+
+**Raises** (for `"always"`/`"on-failure"`/`"unless-stopped"` only — never for `policy="no"`, regardless of platform) `RuntimeError` if not running on Linux, if `systemctl` isn't available, or if `systemctl --user enable` itself fails (e.g. no user systemd/D-Bus session at all — common in some minimal containers); `TypeError`/`ValueError` for invalid arguments (an unrecognized `policy`, a `name` with disallowed characters, an empty `command` list, a negative `restart_sec`, `":N"` attached to anything other than `"on-failure"` — same as Docker's own `--restart` flag rejects that combination too — or `command` left unset with an empty `sys.argv[0]`, with nothing to auto-derive a path from).
+
+### Restart Policy Values
+
+| `policy` | What it does here | vs. Docker |
+| --- | --- | --- |
+| `"no"` (default) | Nothing at all — no unit written, no `systemctl`/`loginctl` calls, no Linux check. | Exact match — Docker's `"no"` also means "never automatically restart, for any reason", which is simply what not calling this function achieves. |
+| `"always"` | `Restart=always` — systemd restarts the process no matter how it exits, including a clean/manual stop. | Close match. |
+| `"on-failure"` / `"on-failure:N"` | `Restart=on-failure` — only restarts on a crash (non-zero exit, signal, etc.), not a clean exit. `:N` sets `StartLimitBurst=N` (default 5 without `:N`) within a 5-minute `StartLimitIntervalSec` window. | **Not exact.** Docker's `max-retries` is a lifetime total, counted forever. Systemd's `StartLimitBurst` is a rolling-window rate limiter — a process failing once every 10 minutes would restart forever here, since it never accumulates N failures inside any single 5-minute window, unlike Docker's literal cap. Close enough to stop a tight crash loop, not the same guarantee. |
+| `"unless-stopped"` | Implemented as plain `Restart=always` — logs a `WARNING` every time it's used, spelling out the gap below. | **No real equivalent.** Docker's `unless-stopped` restarts always, *except* a manual stop persists across a later daemon/machine restart. Systemd has no primitive for that: a `systemctl --user stop` doesn't durably record "a human wanted this off" anywhere a later boot would consult, and an *enabled* unit starts again on the very next boot/login regardless of a prior manual stop. Concretely: stop the service by hand, reboot, and systemd **will** start it again (unlike real `unless-stopped`) — run `systemctl --user disable <name>.service` instead for a stop that actually sticks. Prefer plain `"always"` unless you specifically want this closest-available approximation. |
+
+**Other differences from Docker:**
+
+* Docker's daemon (`dockerd`, itself a systemd unit) is one always-installed system service coordinating every container's restart policy. `staypresent.restart()` instead creates one ordinary `systemctl --user` unit per script — there's no separate "StayPresent daemon"; systemd itself is the entire mechanism.
+* A Docker container is restarted by a system-wide daemon regardless of whether anyone is logged into the host. A `systemctl --user` unit fundamentally depends on that user's own systemd instance existing, which needs either an active login session or lingering enabled — there's no "always-on regardless of login" mode for a *user*-level unit short of lingering (`enable_linger=True`, the default).
+
+---
+
+## 12. Frequently Asked Questions (FAQ)
 
 ### Is `waitress` mandatory?
 
@@ -959,3 +1033,94 @@ staypresent.web.html("templates/index.html", exclude=[".env", ".git", "*.py", "s
 ```
 
 A request for anything matching an `exclude` pattern gets a plain 404, the same as if the file didn't exist. See [Section 3.3](#33-html--static-assets).
+
+---
+
+### How do I configure timezones and time formats on the status page?
+
+Pass `timezone="Asia/Kolkata"` (or common aliases like `"IST"`, `"EST"`) and `time_format="24h"` to `staypresent.web.status()`. By default, `timezone="auto"` detects the visitor's local browser timezone.
+
+---
+
+### Is `staypresent.heartbeat()` safe to call in standalone scripts?
+
+Yes. If called outside a `heartbeat_timeout`-configured run (or in a standalone script without StayPresent supervision), it acts as a harmless no-op.
+
+---
+
+### How does rate limiting work for the status page admin login?
+
+Failed attempts are rate-limited per client IP—after 5 wrong keys within a 15-minute window, further attempts from that IP are rejected. If you are behind a reverse proxy, set `trust_proxy_headers=True` so rate limiting uses `X-Forwarded-For` instead of the raw proxy connection.
+
+---
+
+### How can I prevent sensitive files like `.env` or source code from being exposed via `html()` or `markdown()`?
+
+Use the `exclude` parameter with patterns or filenames: `exclude=[".env", "*.py", ".git", "secrets.json"]`. Any request matching an excluded pattern receives a standard 404 response as if the file does not exist.
+
+---
+
+### Does StayPresent restart my bot after the whole machine reboots, not just after a crash?
+
+Not by itself. `restart_on_crash` only works while the Python process is alive; a machine reboot terminates that process and everything it supervises.
+
+For boot-level recovery on Linux, call `staypresent.restart(policy="always")` once to install and enable a systemd user service that can relaunch your script after login or reboot. See [Section 11](#11-boot-level-restart-staypresentrestart).
+
+---
+
+### Is `staypresent.restart()` safe to leave in my script if I don't want boot-level restarts?
+
+Yes. The default `policy="no"` is a true no-op: it does not write files, run `systemctl` or `loginctl`, or require Linux.
+
+Boot-level behavior is only enabled when you explicitly use `policy="always"`, `"on-failure"`, or `"unless-stopped"`.
+
+---
+
+### Does `staypresent.restart(policy="always")` start a second copy of my bot immediately?
+
+No. It installs and enables the systemd service but deliberately does not start it immediately. Starting it from the current process would create a second copy of your bot.
+
+The returned configuration includes the `start_command` you can use when you're ready to hand the process over to systemd.
+
+---
+
+### What's the difference between the `staypresent.restart()` policies?
+
+* `no` — default; installs nothing.
+* `always` — restarts the service regardless of how it exits.
+* `on-failure` — restarts only after a failure; it can optionally include a restart limit such as `on-failure:3`.
+* `unless-stopped` — behaves like `always` under systemd, with an important limitation: a manual stop does not persist across a reboot.
+
+See [Restart Policy Values](#restart-policy-values) for the exact behavior.
+
+---
+
+### Does `policy="unless-stopped"` stay stopped after a reboot?
+
+No. Unlike Docker's `unless-stopped`, StayPresent implements this policy using systemd's `Restart=always`. If you manually stop an enabled service and then reboot, systemd can start it again.
+
+To prevent it from starting on the next boot, disable the service with `systemctl --user disable <name>.service`.
+
+---
+
+### What does `enable_linger` do?
+
+When `enable_linger=True` (the default), StayPresent attempts to enable systemd user lingering for the current user. This allows the user service to run after a reboot even when that user has not logged in interactively.
+
+If enabling linger fails, StayPresent logs a warning instead of failing the restart setup. You can run the suggested `loginctl enable-linger` command manually if your system requires it.
+
+---
+
+### What happens if `staypresent.restart()` cannot install the service?
+
+A non-default restart policy raises `RuntimeError` when boot-level restart cannot be configured—for example, when running on a non-Linux system, when `systemctl` is unavailable, or when the user systemd session cannot be enabled.
+
+`policy="no"` does not raise these errors because it performs no system-level setup.
+
+---
+
+### Does `staypresent.restart()` replace Docker's restart policy?
+
+No. It is intended for scripts running directly on Linux hosts such as bare-metal machines, VMs, or VPSs.
+
+If your bot already runs under Docker, use Docker's restart policy (or your orchestrator's equivalent). You generally do not need `staypresent.restart()` inside the container.

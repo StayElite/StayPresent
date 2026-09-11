@@ -140,6 +140,8 @@ staypresent.web.status(
         }
     ],
     mode="dark",
+    timezone="Asia/Kolkata",  # or the shorthand alias: timezone="IST" — defaults to "auto" (each visitor's own browser timezone)
+    time_format="24h",  # or "12h" (the default)
 )
 ```
 
@@ -232,6 +234,21 @@ This sends a request every 300 seconds.
 
 ---
 
+## 🔁 Restart on Reboot (Linux)
+
+`restart_on_crash` (the default) already relaunches a bot after it crashes — but that only works while the Python process itself is alive. A full machine reboot kills that process along with everything it was watching. `staypresent.restart()` covers that gap on Linux by installing a real `systemd --user` unit, mirroring Docker's own `--restart` flag directly — same four values, default `"no"`:
+
+```python
+import staypresent
+
+staypresent.restart(policy="always")   # or "no" (default, does nothing), "on-failure"[:5], "unless-stopped"
+staypresent.run("bot.py")
+```
+
+Call it once, and it enables (but doesn't start) a systemd unit that relaunches this exact script the next time you log in — or on every future boot, with no login required, once `loginctl enable-linger` is set (attempted automatically). `policy="no"` (the default, just like Docker's) is a true no-op — nothing is written or run, and no Linux check even happens — so it's safe to leave `staypresent.restart()` in a script unconditionally on any platform. See [DOCUMENTATION.md](DOCUMENTATION.md#12-boot-level-restart-staypresentrestart) for exactly how each policy compares to Docker's, especially `"unless-stopped"` (no exact systemd equivalent — used with a documented caveat) and `"on-failure"`'s retry-limit semantics (a rolling window here, not Docker's lifetime counter).
+
+---
+
 ## 🌐 Web Server
 
 StayPresent can also be used without running a bot.
@@ -260,6 +277,7 @@ This makes StayPresent useful not only for bots, but also for lightweight backgr
 | `staypresent.web.*`       | Register HTTP responses and pages.              |
 | `staypresent.ping(...)`   | Send a single HTTP ping.                        |
 | `staypresent.cron(...)`   | Schedule recurring background HTTP pings.       |
+| `staypresent.restart(...)`| Restart on reboot too, not just on crash (Linux). |
 
 For the complete API and configuration reference, see the [documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md).
 
@@ -325,3 +343,113 @@ staypresent.run("bot.py")
 That's the idea behind StayPresent:
 
 > **Keep your process present. Keep your service alive.**
+
+---
+
+## Frequently Asked Questions (FAQ)
+
+### How do I keep a Python Telegram/Discord bot running 24/7 on Render, Railway, or Koyeb?
+
+Hosting platforms expect your application to bind to an HTTP port (like `PORT 8080`) to pass health checks. StayPresent automatically starts a web server alongside your bot so the platform considers it healthy and active:
+
+```python
+import staypresent
+
+staypresent.run("bot.py", host="0.0.0.0", port=8080)
+
+```
+
+---
+
+### How do I fix "ImportError: attempted relative import with no known parent package"?
+
+When your bot is part of a Python package, launching it with `bot_file` breaks relative imports (`from . import helper`). Use `bot_module` instead, which executes the code using `python -m`:
+
+```python
+import staypresent
+
+staypresent.run(bot_module="mypkg.bot")
+
+```
+
+---
+
+### How can I run multiple Python bots under a single web service?
+
+Pass a list of files or modules to `staypresent.run()`. Each bot runs in its own process, gets independent crash monitoring, and automatically restarts if it fails without affecting the other bots:
+
+```python
+import staypresent
+
+staypresent.run(["telegram_bot.py", "discord_bot.py"])
+
+```
+
+---
+
+### How do I prevent free-tier hosting services from going to sleep due to inactivity?
+
+Free hosting tiers often spin down services that receive no incoming traffic. Use `staypresent.cron()` to set up a periodic self-ping to keep the web service awake:
+
+```python
+import staypresent
+
+staypresent.cron("https://your-app-name.onrender.com", interval=300)
+staypresent.run("bot.py")
+
+```
+
+---
+
+### How do I detect if a bot is frozen or stuck in an infinite loop?
+
+Crash recovery only catches bots that actually exit. For deadlocks or unresponsive loops, call `staypresent.heartbeat()` inside your worker loop and set a `heartbeat_timeout`. StayPresent will terminate and restart the process if a heartbeat is missed:
+
+```python
+# In worker script:
+import staypresent
+while True:
+    staypresent.heartbeat()
+    do_work()
+
+# In main supervisor script:
+staypresent.run("worker.py", heartbeat_timeout=30)
+
+```
+
+---
+
+### How do I configure custom timezones, 24-hour clocks, and dark mode on the status page?
+
+You can customize the appearance and time format of the built-in `/status` dashboard via `staypresent.web.status()`:
+
+```python
+import staypresent
+
+staypresent.web.status(
+    title="My Bot Status",
+    timezone="Asia/Kolkata",  # Accepts IANA keys or aliases like "IST", "EST"
+    time_format="24h",
+    mode="dark"
+)
+
+```
+
+---
+
+### How do I hide sensitive files like `.env` or source code from static routes?
+
+When using `html()` or `markdown()` routes, neighboring static files in the directory are exposed by default. Use the `exclude` parameter to block access to secrets or code:
+
+```python
+import staypresent
+
+staypresent.web.html("index.html", exclude=[".env", "*.py", ".git", "secrets.json"])
+
+```
+
+---
+
+### Can I run StayPresent without an HTTP server, or as a standalone web server without bots?
+
+Yes. Pass `web_server=False` to supervise background workers silently without listening on a port, or omit `bot_file`/`bot_module` entirely to host a lightweight Web/Markdown/Status-page server.

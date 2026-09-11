@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "staypresent"
-version = "1.6.0"
+version = "1.7.0"
 description = "Keep your Python bots alive with automatic restarts, heartbeat monitoring, and a built-in status dashboard."
 readme = "README.md"
 license = { text = "MIT" }
