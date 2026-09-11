@@ -346,7 +346,7 @@ That's the idea behind StayPresent:
 
 ---
 
-## Frequently Asked Questions (FAQ)
+## ❓ Frequently Asked Questions (FAQ)
 
 ### How do I keep a Python Telegram/Discord bot running 24/7 on Render, Railway, or Koyeb?
 
