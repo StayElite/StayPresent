@@ -245,7 +245,7 @@ staypresent.restart(policy="always")   # or "no" (default, does nothing), "on-fa
 staypresent.run("bot.py")
 ```
 
-Call it once, and it enables (but doesn't start) a systemd unit that relaunches this exact script the next time you log in — or on every future boot, with no login required, once `loginctl enable-linger` is set (attempted automatically). `policy="no"` (the default, just like Docker's) is a true no-op — nothing is written or run, and no Linux check even happens — so it's safe to leave `staypresent.restart()` in a script unconditionally on any platform. See [DOCUMENTATION.md](DOCUMENTATION.md#12-boot-level-restart-staypresentrestart) for exactly how each policy compares to Docker's, especially `"unless-stopped"` (no exact systemd equivalent — used with a documented caveat) and `"on-failure"`'s retry-limit semantics (a rolling window here, not Docker's lifetime counter).
+Call it once, and it enables (but doesn't start) a systemd unit that relaunches this exact script the next time you log in — or on every future boot, with no login required, once `loginctl enable-linger` is set (attempted automatically). `policy="no"` (the default, just like Docker's) is a true no-op — nothing is written or run, and no Linux check even happens — so it's safe to leave `staypresent.restart()` in a script unconditionally on any platform. See [documentation](https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md#11-boot-level-restart-staypresentrestart) for exactly how each policy compares to Docker's, especially `"unless-stopped"` (no exact systemd equivalent — used with a documented caveat) and `"on-failure"`'s retry-limit semantics (a rolling window here, not Docker's lifetime counter).
 
 ---
 
