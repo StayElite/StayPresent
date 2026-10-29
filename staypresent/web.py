@@ -148,6 +148,8 @@ def _normalize_path(path: str) -> str:
     """
     if not isinstance(path, str):
         raise TypeError(f"staypresent.web: 'path' must be a str, got {type(path).__name__}.")
+    if "\0" in path:
+        raise ValueError("staypresent.web: 'path' must not contain null bytes.")
     if not path or not path.strip():
         raise ValueError("staypresent.web: 'path' cannot be empty. Use '/' for the default route.")
 

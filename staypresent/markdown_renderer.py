@@ -16,6 +16,7 @@ Docs: https://github.com/StayElite/StayPresent/blob/main/DOCUMENTATION.md
 
 import html
 import re
+import urllib.parse
 
 __all__ = ["render", "StayPresentMarkdownRenderer"]
 
@@ -133,8 +134,29 @@ def _has_dangerous_scheme(url: str, dangerous_schemes: frozenset) -> bool:
     A URL with no scheme at all (a relative path, "#anchor", "//host/path",
     etc.) is always safe by this check - only an explicit, *executable*
     scheme is rejected.
+
+    Normalizes the candidate URL first by stripping surrounding angle brackets
+    or entities (`&lt;...&gt;` or `<...>`), removing non-printable control
+    characters, and unquoting percent-encoded scheme bytes (e.g. `%6a%61%76...`)
+    so obfuscated schemes cannot bypass validation.
     """
-    m = _URL_SCHEME_RE.match(url)
+    cleaned = url.strip()
+    if cleaned.startswith("&lt;") and cleaned.endswith("&gt;"):
+        cleaned = cleaned[4:-4].strip()
+    elif cleaned.startswith("<") and cleaned.endswith(">"):
+        cleaned = cleaned[1:-1].strip()
+
+    # Repeatedly unquote up to 3 times to unmask percent-encoded schemes
+    for _ in range(3):
+        unquoted = urllib.parse.unquote(cleaned)
+        if unquoted == cleaned:
+            break
+        cleaned = unquoted
+
+    # Strip control characters (\x00-\x1f, \x7f) that browsers often ignore
+    cleaned = re.sub(r'[\x00-\x1f\x7f]', '', cleaned)
+
+    m = _URL_SCHEME_RE.match(cleaned)
     return bool(m) and m.group(1).lower() in dangerous_schemes
 
 
@@ -458,12 +480,47 @@ class StayPresentMarkdownRenderer:
 
     def _split_table_row(self, line):
         line = line.strip()
-        if line.startswith("|"):
-            line = line[1:]
-        if line.endswith("|") and not line.endswith("\\|"):
-            line = line[:-1]
-        cells = re.split(r'(?<!\\)\|', line)
-        return [c.replace("\\|", "|").strip() for c in cells]
+        n = len(line)
+        if n == 0:
+            return []
+        i = 1 if line.startswith("|") else 0
+        end = n
+        if line.endswith("|"):
+            bs = 0
+            j = n - 2
+            while j >= 0 and line[j] == "\\":
+                bs += 1
+                j -= 1
+            if bs % 2 == 0:
+                end = n - 1
+
+        cells = []
+        curr = []
+        while i < end:
+            ch = line[i]
+            if ch == "\\" and i + 1 < end:
+                next_ch = line[i + 1]
+                if next_ch == "|":
+                    curr.append("|")
+                    i += 2
+                    continue
+                elif next_ch == "\\":
+                    curr.append(r"\\")
+                    i += 2
+                    continue
+                else:
+                    curr.append(ch)
+                    i += 1
+                    continue
+            elif ch == "|":
+                cells.append("".join(curr).strip())
+                curr = []
+                i += 1
+                continue
+            curr.append(ch)
+            i += 1
+        cells.append("".join(curr).strip())
+        return cells
 
     def _render_table(self, lines):
         header = self._split_table_row(lines[0])
@@ -576,6 +633,16 @@ class StayPresentMarkdownRenderer:
         text = _STRIKE_RE.sub(r'<del>\1</del>', text)
         return text
 
+    @staticmethod
+    def _clean_destination_url(url: str) -> str:
+        """Strip enclosing angle brackets if destination was formatted as <url>."""
+        trimmed = url.strip()
+        if trimmed.startswith("&lt;") and trimmed.endswith("&gt;"):
+            return trimmed[4:-4].strip()
+        if trimmed.startswith("<") and trimmed.endswith(">"):
+            return trimmed[1:-1].strip()
+        return url
+
     def _render_inline(self, text):
         text = text.strip()
         self._placeholders = []
@@ -607,6 +674,7 @@ class StayPresentMarkdownRenderer:
             # alt/url/title were captured from text already run through
             # html.escape(..., quote=False) in step 3 above - only quotes
             # need escaping here, not the whole fragment again.
+            url = self._clean_destination_url(url)
             title_attr = ' title="{}"'.format(self._escape_attr_quotes(title)) if title else ""
             return self._stash(
                 '<img src="{}" alt="{}"{}>'.format(
@@ -635,6 +703,7 @@ class StayPresentMarkdownRenderer:
                 # file URL scheme - render the (already emphasis-processed)
                 # label as plain text instead of wrapping it in an <a>.
                 return self._stash(label)
+            url = self._clean_destination_url(url)
             title_attr = ' title="{}"'.format(self._escape_attr_quotes(title)) if title else ""
             return self._stash('<a href="{}"{}>{}</a>'.format(self._escape_attr_quotes(url), title_attr, label))
 

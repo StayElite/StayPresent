@@ -1,6 +1,23 @@
 # StayPresent — Changelog
 
-## v1.7.0 [Current Release]
+## v1.7.1 [Current Release]
+
+### Security & Sanitization
+* **Markdown Link Scheme Sanitization:** Fixed a vulnerability in the built-in Markdown renderer where dangerous schemes enclosed in angle brackets (e.g. `[Click](<javascript:alert(1)>)`), obfuscated with percent-encoding (`%6a%61%76%61...`), or containing control characters bypassed scheme checks. Destinations are now normalized and unquoted before validation, stripping dangerous executable schemes (`javascript:`, `vbscript:`, `data:`, `file:`) safely.
+* **Path Traversal & Null Byte Protection:** Enforced strict rejection of embedded null bytes (`\0`) in `staypresent.web._normalize_path()`.
+
+### Fixed & Improvements
+* **Boolean Type Coercion Bug Fixes:** Fixed subtle Python boolean-as-integer bugs across the entire codebase where booleans like `port=True`, `threads=True`, `max_restarts=True`, `restart_delay=True`, `heartbeat_timeout=True`, and `timeout=True` were incorrectly accepted as `1` or `1.0`:
+  * `staypresent.runner.run()`: strictly validates `port`, `threads`, `max_restarts`, `restart_delay`, `restart_reset_after`, and `heartbeat_timeout` to reject booleans and non-numeric types.
+  * `staypresent.pinger`: `_build_url()` and `ping()` / `cron()` now strictly disallow booleans for `port`, `timeout`, and `interval`.
+* **Markdown Table Escaped Delimiters:** Fixed table cell parsing in `StayPresentMarkdownRenderer` where a literal escaped backslash before a pipe (`\\|`) was previously misinterpreted as an escaped pipe. Double backslashes are now treated as literal backslashes preceding column boundaries.
+* **Service Parameter Validation:** `staypresent.service.restart()` now performs full type and format checks on parameters (`name`, `command`, `working_directory`, `restart_sec`, `enable_linger`) unconditionally across all policies, preventing invalid configurations from going unnoticed even when `policy="no"`.
+* **Empty/Whitespace String Validation:** Fixed `status_registry._validate_optional_str()` and `runner.py`'s per-bot configuration to strictly reject empty or whitespace-only strings for `services_name` and `services_description`.
+* **Test Suite Added:** Added comprehensive automated test suite in `tests/` covering pinger URL generation, markdown security sanitization, table parsing, service quoting & policies, web path normalization, and runner parameter validations.
+
+---
+
+## v1.7.0
 
 ### Added
 

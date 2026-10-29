@@ -295,6 +295,39 @@ def restart(
             )
         max_retries = int(retries_part)
 
+    # Validate argument shapes and types up front so invalid inputs fail immediately
+    # on all platforms and policies instead of being silently ignored.
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            raise TypeError(f"staypresent.restart(): 'name' must be a non-empty str or None, got {name!r}.")
+        if not _UNIT_NAME_RE.match(name.strip()):
+            raise ValueError(
+                f"staypresent.restart(): name={name!r} is invalid - only letters, digits, '-', and "
+                "'_' are allowed in a systemd unit name here."
+            )
+
+    if command is not None:
+        if not isinstance(command, list) or not command or not all(isinstance(c, str) for c in command):
+            raise TypeError(
+                "staypresent.restart(): 'command' must be a non-empty list of str (an argv list), "
+                f"got {command!r}."
+            )
+
+    if working_directory is not None:
+        if not isinstance(working_directory, str) or not working_directory.strip():
+            raise TypeError(
+                "staypresent.restart(): 'working_directory' must be a non-empty str or None, got "
+                f"{working_directory!r}."
+            )
+
+    if not isinstance(restart_sec, (int, float)) or isinstance(restart_sec, bool) or restart_sec < 0:
+        raise TypeError(
+            f"staypresent.restart(): 'restart_sec' must be a non-negative int/float, got {restart_sec!r}."
+        )
+
+    if not isinstance(enable_linger, bool):
+        raise TypeError(f"staypresent.restart(): 'enable_linger' must be a bool, got {type(enable_linger).__name__}.")
+
     if policy_name == "no":
         # Deliberately does nothing at all - not even a platform check -
         # so `staypresent.restart()` (this policy is the default) is
@@ -330,13 +363,8 @@ def restart(
 
     if name is None:
         name = _default_service_name()
-    elif not isinstance(name, str) or not name.strip():
-        raise TypeError(f"staypresent.restart(): 'name' must be a non-empty str or None, got {name!r}.")
-    elif not _UNIT_NAME_RE.match(name):
-        raise ValueError(
-            f"staypresent.restart(): name={name!r} is invalid - only letters, digits, '-', and "
-            "'_' are allowed in a systemd unit name here."
-        )
+    else:
+        name = name.strip()
 
     if command is None:
         if not sys.argv[0]:
@@ -347,24 +375,9 @@ def restart(
                 "explicitly, e.g. command=[\"python3\", \"/path/to/bot.py\"]."
             )
         command = [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:]
-    if not isinstance(command, list) or not command or not all(isinstance(c, str) for c in command):
-        raise TypeError(
-            "staypresent.restart(): 'command' must be a non-empty list of str (an argv list), "
-            f"got {command!r}."
-        )
 
     if working_directory is None:
         working_directory = os.getcwd()
-    elif not isinstance(working_directory, str) or not working_directory.strip():
-        raise TypeError(
-            "staypresent.restart(): 'working_directory' must be a non-empty str or None, got "
-            f"{working_directory!r}."
-        )
-
-    if not isinstance(restart_sec, (int, float)) or isinstance(restart_sec, bool) or restart_sec < 0:
-        raise TypeError(
-            f"staypresent.restart(): 'restart_sec' must be a non-negative int/float, got {restart_sec!r}."
-        )
 
     if policy_name == "unless-stopped":
         logger.warning(

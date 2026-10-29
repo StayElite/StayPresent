@@ -390,10 +390,10 @@ def _normalize_bot_configs(bot_file, bot_module, bot_args, env, bots, web_server
                 ("services_name", entry_services_name),
                 ("services_description", entry_services_description),
             ):
-                if pval is not None and not isinstance(pval, str):
+                if pval is not None and (not isinstance(pval, str) or not pval.strip()):
                     raise TypeError(
-                        f"staypresent.run(): bots[{i}]['{pname}'] must be a str or None, "
-                        f"got {type(pval).__name__}."
+                        f"staypresent.run(): bots[{i}]['{pname}'] must be a non-empty str or None, "
+                        f"got {pval!r}."
                     )
 
             # Per-bot status-page visibility override - same "None means
@@ -749,27 +749,27 @@ def run(
                 f"staypresent.run(): bot file '{cfg['file']}' does not exist or is not a file."
             )
 
-    if not (0 <= port <= 65535):
-        raise ValueError(f"staypresent.run(): port must be between 0 and 65535, got {port}.")
-    if threads < 1:
+    if isinstance(port, bool) or not isinstance(port, int) or not (0 <= port <= 65535):
+        raise ValueError(f"staypresent.run(): port must be an integer between 0 and 65535, got {port}.")
+    if isinstance(threads, bool) or not isinstance(threads, int) or threads < 1:
         # threads=0 doesn't error out anywhere - waitress just accepts
         # connections and never services them, so the server looks "up"
         # (health checks on the TCP level pass) but every request hangs
         # forever. That silent failure is worse than refusing outright.
-        raise ValueError(f"staypresent.run(): threads must be at least 1, got {threads}.")
-    if max_restarts < 0:
-        raise ValueError(f"staypresent.run(): max_restarts must be >= 0, got {max_restarts}.")
-    if restart_delay < 0:
-        raise ValueError(f"staypresent.run(): restart_delay must be >= 0, got {restart_delay}.")
+        raise ValueError(f"staypresent.run(): threads must be an integer >= 1, got {threads}.")
+    if isinstance(max_restarts, bool) or not isinstance(max_restarts, int) or max_restarts < 0:
+        raise ValueError(f"staypresent.run(): max_restarts must be an integer >= 0, got {max_restarts}.")
+    if isinstance(restart_delay, bool) or not isinstance(restart_delay, (int, float)) or restart_delay < 0:
+        raise ValueError(f"staypresent.run(): restart_delay must be a non-negative number, got {restart_delay}.")
     # Validated up front (same as the other params above) even though the
     # result isn't actually applied until after status_registry.reset()
     # below - so a bad services_name/services_description raises before
     # _run_called is claimed, instead of leaving the process in a
     # half-started state.
     for _pname, _pval in (("services_name", services_name), ("services_description", services_description)):
-        if _pval is not None and not isinstance(_pval, str):
+        if _pval is not None and (not isinstance(_pval, str) or not _pval.strip()):
             raise TypeError(
-                f"staypresent.run(): '{_pname}' must be a str or None, got {type(_pval).__name__}."
+                f"staypresent.run(): '{_pname}' must be a non-empty str or None, got {_pval!r}."
             )
     if (services_name is not None or services_description is not None) and len(bot_configs) > 1:
         raise TypeError(
@@ -780,15 +780,24 @@ def run(
         )
     if not isinstance(status, bool):
         raise TypeError(f"staypresent.run(): 'status' must be a bool, got {type(status).__name__}.")
-    if restart_reset_after < 0:
+    if not isinstance(restart_on_crash, bool):
+        raise TypeError(f"staypresent.run(): 'restart_on_crash' must be a bool, got {type(restart_on_crash).__name__}.")
+    if not isinstance(production, bool):
+        raise TypeError(f"staypresent.run(): 'production' must be a bool, got {type(production).__name__}.")
+    if not isinstance(install_signal_handlers, bool):
+        raise TypeError(f"staypresent.run(): 'install_signal_handlers' must be a bool, got {type(install_signal_handlers).__name__}.")
+    if not isinstance(web_server, bool):
+        raise TypeError(f"staypresent.run(): 'web_server' must be a bool, got {type(web_server).__name__}.")
+    if isinstance(restart_reset_after, bool) or not isinstance(restart_reset_after, (int, float)) or restart_reset_after < 0:
         raise ValueError(
-            f"staypresent.run(): restart_reset_after must be >= 0, got {restart_reset_after}."
+            f"staypresent.run(): restart_reset_after must be a non-negative number, got {restart_reset_after}."
         )
-    if heartbeat_timeout is not None and heartbeat_timeout <= 0:
-        raise ValueError(
-            f"staypresent.run(): heartbeat_timeout must be > 0 (or None to disable), "
-            f"got {heartbeat_timeout}."
-        )
+    if heartbeat_timeout is not None:
+        if isinstance(heartbeat_timeout, bool) or not isinstance(heartbeat_timeout, (int, float)) or heartbeat_timeout <= 0:
+            raise ValueError(
+                f"staypresent.run(): heartbeat_timeout must be a positive number (or None to disable), "
+                f"got {heartbeat_timeout}."
+            )
 
     # Only now - once every validation above has actually passed and we're
     # committed to starting the shared server - claim the "already called"

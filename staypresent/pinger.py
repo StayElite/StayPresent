@@ -117,8 +117,8 @@ def _split_embedded_port(host: str):
 def _build_url(host: str, port: int = None, path: str = "/", https: bool = None) -> str:
     if not isinstance(host, str):
         raise TypeError(f"staypresent.ping()/cron(): 'host' must be a str, got {type(host).__name__}.")
-    if port is not None and not isinstance(port, int):
-        raise TypeError(f"staypresent.ping()/cron(): 'port' must be an int, got {type(port).__name__}.")
+    if isinstance(port, bool) or (port is not None and not isinstance(port, int)):
+        raise TypeError(f"staypresent.ping()/cron(): 'port' must be an int or None, got {type(port).__name__}.")
     if not isinstance(path, str):
         raise TypeError(f"staypresent.ping()/cron(): 'path' must be a str, got {type(path).__name__}.")
     if not host or not host.strip():
@@ -215,6 +215,8 @@ def ping(host: str, port: int = None, path: str = "/", timeout: float = 10.0, ht
         failure (HTTP error status, timeout, DNS failure, connection
         refused, etc.), else None.
     """
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise TypeError(f"staypresent.ping(): timeout must be an int or float, got {type(timeout).__name__}.")
     if timeout <= 0:
         raise ValueError(f"staypresent.ping(): timeout must be > 0, got {timeout}.")
 
@@ -305,8 +307,12 @@ def cron(
         A `CronHandle` you can use to stop the background pinger later via
         `handle.stop()`, or check `handle.is_running`.
     """
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+        raise TypeError(f"staypresent.cron(): interval must be an int or float, got {type(interval).__name__}.")
     if interval <= 0:
         raise ValueError(f"staypresent.cron(): interval must be > 0, got {interval}.")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise TypeError(f"staypresent.cron(): timeout must be an int or float, got {type(timeout).__name__}.")
     if timeout <= 0:
         raise ValueError(f"staypresent.cron(): timeout must be > 0, got {timeout}.")
 

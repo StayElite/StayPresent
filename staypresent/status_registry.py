@@ -152,8 +152,8 @@ _pending_single_target_override = None
 
 
 def _validate_optional_str(value, param_name: str, caller: str) -> None:
-    if value is not None and not isinstance(value, str):
-        raise TypeError(f"{caller}: '{param_name}' must be a str or None, got {type(value).__name__}.")
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise TypeError(f"{caller}: '{param_name}' must be a non-empty str or None, got {value!r}.")
 
 
 def update_service_override(key: str, name: str = None, description: str = None, caller: str = "staypresent") -> None:
